@@ -1,0 +1,20 @@
+# Python and environment
+__pycache__/
+*.py[cod]
+*$py.class
+*.bak
+*.bak.*
+.venv/
+venv/
+env/
+
+# Large dataset files (>100MB rejected by GitHub)
+sample_data/opta_ucl/ucl_events.parquet
+sample_data/events/
+sample_data/lineups/
+sample_data/_opta_raw/
+
+# Local databases and runtime state
+sofascore_platform.db
+.DS_Store
+Thumbs.db

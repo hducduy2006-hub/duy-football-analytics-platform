@@ -1,0 +1,67 @@
+services:
+  spark-master:
+    image: apache/spark:3.5.3-python3
+    container_name: spark-master
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+      --host spark-master --port 7077 --webui-port 8080
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+      - "4041:4040"
+    volumes:
+      - ./apps:/opt/spark-apps
+      - ./data:/opt/spark-data
+    networks:
+      - spark-net
+
+  spark-worker-1:
+    image: apache/spark:3.5.3-python3
+    container_name: spark-worker-1
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077 --webui-port 8081 --cores 2 --memory 1G
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./apps:/opt/spark-apps
+      - ./data:/opt/spark-data
+    networks:
+      - spark-net
+
+  spark-worker-2:
+    image: apache/spark:3.5.3-python3
+    container_name: spark-worker-2
+    command: >
+      /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077 --webui-port 8081 --cores 2 --memory 1G
+    depends_on:
+      - spark-master
+    ports:
+      - "8082:8081"
+    volumes:
+      - ./apps:/opt/spark-apps
+      - ./data:/opt/spark-data
+    networks:
+      - spark-net
+
+  spark-client:
+    image: apache/spark:3.5.3-python3
+    container_name: spark-client
+    user: root
+    command: ["sleep", "infinity"]
+    depends_on:
+      - spark-master
+    ports:
+      - "4040:4040"
+    volumes:
+      - ./apps:/opt/spark-apps
+      - ./data:/opt/spark-data
+    networks:
+      - spark-net
+
+networks:
+  spark-net:
+    driver: bridge

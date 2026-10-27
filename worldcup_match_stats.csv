@@ -1,0 +1,129 @@
+﻿match_id,match_date,competition_stage,home_team,away_team,team_name,team_side,possession_pct,possession_seconds,shots,shots_on_target,shots_off_target,blocked_shots,xg,key_passes,goalkeeper_saves,corners,fouls,free_kicks,yellow_cards,red_cards,goals,source
+8650,2018-07-06,Quarter-finals,Brazil,Belgium,Brazil,Home,61.1,1981.0009999999975,25,9,7,9,2.6091956661999998,21,2,8,20,5,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+8650,2018-07-06,Quarter-finals,Brazil,Belgium,Belgium,Away,38.9,1260.5300000000002,8,3,3,2,0.40525613299999996,4,8,4,18,8,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7584,2018-07-02,Round of 16,Belgium,Japan,Belgium,Home,60.3,2010.4210000000005,28,7,14,7,2.917831719499999,21,2,8,13,7,0,0,3,StatsBomb Open Data — FIFA World Cup 2018
+7584,2018-07-02,Round of 16,Belgium,Japan,Japan,Away,39.7,1323.1410000000017,12,4,4,4,0.6937694522000001,5,4,4,11,6,1,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7554,2018-06-24,Group Stage,England,Panama,England,Home,56.7,1715.335,11,7,2,2,3.168321031,3,1,3,14,10,1,0,6,StatsBomb Open Data — FIFA World Cup 2018
+7554,2018-06-24,Group Stage,England,Panama,Panama,Away,43.3,1308.4170000000004,8,2,5,1,1.0800387518,6,1,2,13,18,3,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7539,2018-06-19,Group Stage,Poland,Senegal,Poland,Home,61.2,1820.5600000000002,10,3,6,1,1.042323384,5,0,3,7,9,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7539,2018-06-19,Group Stage,Poland,Senegal,Senegal,Away,38.8,1155.6509999999976,7,1,3,3,1.4277506340000001,4,2,3,17,10,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7550,2018-06-22,Group Stage,Serbia,Switzerland,Serbia,Home,39.4,1216.366000000001,12,3,8,1,1.153485278,10,3,3,20,14,4,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7550,2018-06-22,Group Stage,Serbia,Switzerland,Switzerland,Away,60.6,1872.5139999999988,19,5,8,6,1.5573086895,10,2,7,13,8,1,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7538,2018-06-18,Group Stage,Sweden,South Korea,Sweden,Home,53.9,1480.1929999999975,16,4,4,8,2.015124456,11,0,6,19,12,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7538,2018-06-18,Group Stage,Sweden,South Korea,South Korea,Away,46.1,1266.248000000001,5,0,2,3,0.414372021,5,3,5,22,12,2,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7534,2018-06-17,Group Stage,Germany,Mexico,Germany,Home,65.5,2059.1180000000018,26,9,9,8,2.2992588492,18,3,6,13,9,2,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7534,2018-06-17,Group Stage,Germany,Mexico,Mexico,Away,34.5,1084.2739999999988,12,4,6,2,0.9932887670000001,10,9,1,15,8,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7543,2018-06-20,Group Stage,Iran,Spain,Iran,Home,25.9,794.7879999999992,6,0,6,0,0.426459236,3,2,2,14,9,2,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7543,2018-06-20,Group Stage,Iran,Spain,Spain,Away,74.1,2269.7069999999994,18,3,6,9,2.1969543835000005,11,0,6,15,11,0,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7544,2018-06-20,Group Stage,Uruguay,Saudi Arabia,Uruguay,Home,45.0,1459.3870000000009,14,3,6,5,1.8073869310000001,10,2,3,13,6,0,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7544,2018-06-20,Group Stage,Uruguay,Saudi Arabia,Saudi Arabia,Away,55.0,1786.308000000001,8,2,3,3,0.2734858323,7,2,2,12,9,0,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7546,2018-06-21,Group Stage,France,Peru,France,Home,42.0,1266.7530000000013,12,4,6,2,1.862419556,8,2,5,11,12,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7546,2018-06-21,Group Stage,France,Peru,Peru,Away,58.0,1749.7730000000001,12,2,8,2,0.625221235,11,3,2,14,9,2,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7545,2018-06-21,Group Stage,Argentina,Croatia,Argentina,Home,62.0,1745.2979999999975,10,3,3,4,1.2180579430000003,8,2,5,20,13,4,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7545,2018-06-21,Group Stage,Argentina,Croatia,Croatia,Away,38.0,1067.905000000001,14,5,6,3,1.8317100519999998,8,3,2,23,12,4,0,3,StatsBomb Open Data — FIFA World Cup 2018
+7585,2018-07-03,Round of 16,Colombia,England,Colombia,Home,50.0,1877.7559999999999,14,4,7,3,0.8311502155,11,1,2,23,11,6,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7585,2018-07-03,Round of 16,Colombia,England,England,Away,50.0,1877.2699999999984,17,2,10,5,2.2442898479999998,12,3,7,13,21,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7569,2018-06-28,Group Stage,Panama,Tunisia,Panama,Home,30.2,888.3170000000007,9,4,3,2,0.6907955865000001,5,4,0,20,14,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7569,2018-06-28,Group Stage,Panama,Tunisia,Tunisia,Away,69.8,2051.578000000002,15,6,6,3,2.8524550040000003,9,4,6,20,14,3,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7572,2018-06-28,Group Stage,Japan,Poland,Japan,Home,53.8,1783.0709999999988,11,3,6,2,0.8906295785,10,1,5,12,8,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7572,2018-06-28,Group Stage,Japan,Poland,Poland,Away,46.2,1530.8809999999996,11,2,5,4,1.040714051,8,3,7,9,8,0,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7561,2018-06-26,Group Stage,Iceland,Croatia,Iceland,Home,38.4,1035.0830000000003,17,6,7,4,2.1326869015,12,0,10,14,7,3,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7561,2018-06-26,Group Stage,Iceland,Croatia,Croatia,Away,61.6,1659.3830000000007,13,2,8,3,0.673928797,8,5,5,13,8,1,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7540,2018-06-19,Group Stage,Russia,Egypt,Russia,Home,46.7,1304.861000000001,12,4,5,3,0.9811507970000001,5,1,7,10,8,2,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7540,2018-06-19,Group Stage,Russia,Egypt,Egypt,Away,53.3,1488.695999999999,15,2,8,5,1.697518253,11,2,4,11,6,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7531,2018-06-16,Group Stage,Argentina,Iceland,Argentina,Home,79.7,2670.5119999999993,28,7,9,12,2.0805182487,20,1,10,11,11,0,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7531,2018-06-16,Group Stage,Argentina,Iceland,Iceland,Away,20.3,682.2320000000005,9,2,5,2,1.0321244945,4,6,2,17,10,0,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7570,2018-06-28,Group Stage,England,Belgium,England,Home,47.8,1620.0939999999996,12,1,7,4,1.2006863693,7,2,7,14,12,0,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7570,2018-06-28,Group Stage,England,Belgium,Belgium,Away,52.2,1771.0390000000002,14,3,4,7,0.9653343229999999,10,1,2,16,9,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7586,2018-07-03,Round of 16,Sweden,Switzerland,Sweden,Home,30.2,879.561000000001,12,3,6,3,0.910466011,6,3,3,12,11,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7586,2018-07-03,Round of 16,Sweden,Switzerland,Switzerland,Away,69.8,2034.8490000000004,16,3,4,9,0.5329880485,10,2,11,16,11,2,1,0,StatsBomb Open Data — FIFA World Cup 2018
+7557,2018-06-25,Group Stage,Iran,Portugal,Iran,Home,26.9,731.6049999999975,9,2,5,2,1.5769696039999999,6,3,0,16,8,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7557,2018-06-25,Group Stage,Iran,Portugal,Portugal,Away,73.1,1992.5539999999992,15,4,8,3,1.5224178248,10,1,5,9,7,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7542,2018-06-20,Group Stage,Portugal,Morocco,Portugal,Home,43.5,1222.2809999999997,12,2,6,4,0.8849862430000001,7,4,5,18,18,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7542,2018-06-20,Group Stage,Portugal,Morocco,Morocco,Away,56.5,1588.0210000000002,17,4,11,2,1.4551028735,11,1,7,23,14,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+8656,2018-07-11,Semi-finals,Croatia,England,Croatia,Home,53.7,2011.898000000001,22,7,10,5,2.1413194335,12,0,8,26,13,2,0,2,StatsBomb Open Data — FIFA World Cup 2018
+8656,2018-07-11,Semi-finals,Croatia,England,England,Away,46.3,1733.8099999999981,11,1,6,4,0.5466641000000001,9,5,4,13,22,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7548,2018-06-22,Group Stage,Brazil,Costa Rica,Brazil,Home,75.2,2576.6299999999987,23,9,9,5,3.0963627985,18,0,10,11,9,2,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7548,2018-06-22,Group Stage,Brazil,Costa Rica,Costa Rica,Away,24.8,849.4149999999997,4,0,3,1,0.158693415,2,7,1,17,13,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7578,2018-06-15,Group Stage,Egypt,Uruguay,Egypt,Home,40.4,1405.6430000000005,8,3,2,3,0.364488455,2,3,0,16,6,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7578,2018-06-15,Group Stage,Egypt,Uruguay,Uruguay,Away,59.6,2075.8069999999975,16,4,6,6,1.9408185929999995,10,3,5,7,7,0,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7553,2018-06-23,Group Stage,South Korea,Mexico,South Korea,Home,40.5,1135.3140000000008,17,6,2,9,0.8217932520000001,11,3,7,26,3,3,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7553,2018-06-23,Group Stage,South Korea,Mexico,Mexico,Away,59.5,1670.8790000000001,14,5,7,2,1.87755172,9,5,4,8,15,0,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7536,2018-06-18,Group Stage,Belgium,Panama,Belgium,Home,64.2,1935.7409999999998,15,6,7,2,1.212055155,8,2,9,17,13,3,0,3,StatsBomb Open Data — FIFA World Cup 2018
+7536,2018-06-18,Group Stage,Belgium,Panama,Panama,Away,35.8,1080.5439999999992,7,2,5,0,0.62535498,5,3,3,20,15,5,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7555,2018-06-24,Group Stage,Poland,Colombia,Poland,Home,42.7,1305.641,11,2,4,5,1.114197838,8,0,7,17,8,2,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7555,2018-06-24,Group Stage,Poland,Colombia,Colombia,Away,57.3,1750.790000000001,13,3,5,5,1.3869427573000002,5,2,5,11,12,0,0,3,StatsBomb Open Data — FIFA World Cup 2018
+7576,2018-06-15,Group Stage,Portugal,Spain,Portugal,Home,36.9,1216.0009999999988,10,3,4,3,1.4345957889999998,5,2,3,13,9,1,0,3,StatsBomb Open Data — FIFA World Cup 2018
+7576,2018-06-15,Group Stage,Portugal,Spain,Spain,Away,63.1,2083.8490000000024,12,5,5,2,1.6609466705,7,0,5,11,6,1,0,3,StatsBomb Open Data — FIFA World Cup 2018
+7565,2018-06-27,Group Stage,Serbia,Brazil,Serbia,Home,44.4,1505.26,11,1,6,4,0.9483194610000001,8,5,5,14,6,3,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7565,2018-06-27,Group Stage,Serbia,Brazil,Brazil,Away,55.6,1882.1279999999983,15,7,3,5,1.419809182,10,1,8,7,8,0,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7551,2018-06-23,Group Stage,Germany,Sweden,Germany,Home,78.5,2430.5050000000006,18,5,5,8,1.318084832,13,5,5,12,9,2,1,2,StatsBomb Open Data — FIFA World Cup 2018
+7551,2018-06-23,Group Stage,Germany,Sweden,Sweden,Away,21.5,666.7120000000004,7,6,0,1,0.8151666949999999,5,3,3,17,11,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7537,2018-06-18,Group Stage,Tunisia,England,Tunisia,Home,37.4,1055.196000000001,6,1,3,2,0.945653212,4,5,2,15,7,0,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7537,2018-06-18,Group Stage,Tunisia,England,England,Away,62.6,1767.269999999999,18,7,8,3,2.626449744999999,11,0,7,9,16,1,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7580,2018-06-30,Round of 16,France,Argentina,France,Home,37.9,1114.8640000000005,9,4,4,1,1.638027032,2,1,0,23,11,2,0,4,StatsBomb Open Data — FIFA World Cup 2018
+7580,2018-06-30,Round of 16,France,Argentina,Argentina,Away,62.1,1828.630999999996,12,4,2,6,1.446559447,5,0,4,14,15,4,0,3,StatsBomb Open Data — FIFA World Cup 2018
+7581,2018-07-01,Round of 16,Croatia,Denmark,Croatia,Home,54.5,2133.234000000001,21,6,8,7,2.1702355979999997,12,2,5,7,14,0,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7581,2018-07-01,Round of 16,Croatia,Denmark,Denmark,Away,45.5,1777.6040000000012,14,3,8,3,0.696494755,8,5,4,19,6,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7549,2018-06-22,Group Stage,Nigeria,Iceland,Nigeria,Home,59.6,1639.6400000000003,17,4,7,6,1.3121593260000002,12,3,6,10,7,1,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7549,2018-06-22,Group Stage,Nigeria,Iceland,Iceland,Away,40.4,1111.2689999999993,10,3,6,1,1.552161967,7,2,5,12,6,0,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7529,2018-06-16,Group Stage,Croatia,Nigeria,Croatia,Home,50.9,1532.9250000000006,11,2,6,3,1.6944666339999996,9,2,6,21,12,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7529,2018-06-16,Group Stage,Croatia,Nigeria,Nigeria,Away,49.1,1476.219,13,2,5,6,0.7623215977000002,10,1,4,15,17,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7562,2018-06-26,Group Stage,Australia,Peru,Australia,Home,56.4,1706.9569999999994,16,2,10,4,1.6292696250000003,11,1,8,12,11,3,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7562,2018-06-26,Group Stage,Australia,Peru,Peru,Away,43.6,1317.2310000000007,4,3,1,0,0.3363750876,2,2,3,12,13,2,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7571,2018-06-28,Group Stage,Senegal,Colombia,Senegal,Home,39.6,1018.0029999999995,7,3,4,0,0.360865074,4,1,1,15,17,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7571,2018-06-28,Group Stage,Senegal,Colombia,Colombia,Away,60.4,1551.268000000002,4,2,1,1,0.28486186999999996,1,3,3,16,13,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7568,2018-06-27,Group Stage,Switzerland,Costa Rica,Switzerland,Home,64.3,2006.638000000001,13,3,6,4,1.2196792517,7,5,6,10,9,2,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7568,2018-06-27,Group Stage,Switzerland,Costa Rica,Costa Rica,Away,35.7,1113.4640000000004,14,6,6,2,1.576212685,8,1,3,15,2,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7530,2018-06-16,Group Stage,France,Australia,France,Home,56.3,1743.4400000000003,12,4,3,5,1.561557064,5,1,5,17,13,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7530,2018-06-16,Group Stage,France,Australia,Australia,Away,43.7,1350.5509999999992,5,2,2,1,0.980031062,3,3,1,20,12,3,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7558,2018-06-25,Group Stage,Uruguay,Russia,Uruguay,Home,57.3,1554.9690000000028,16,6,5,5,2.4825809298,10,1,4,19,13,1,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7558,2018-06-25,Group Stage,Uruguay,Russia,Russia,Away,42.7,1156.965999999997,3,1,1,1,0.180184531,3,4,2,19,12,2,1,0,StatsBomb Open Data — FIFA World Cup 2018
+7583,2018-07-02,Round of 16,Brazil,Mexico,Brazil,Home,47.1,1467.1229999999982,19,10,5,4,3.320421268,13,1,8,8,13,2,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7583,2018-07-02,Round of 16,Brazil,Mexico,Mexico,Away,52.9,1646.3960000000013,14,1,5,8,0.5827998199999999,8,8,7,19,3,4,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7547,2018-06-21,Group Stage,Denmark,Australia,Denmark,Home,46.6,1533.3199999999995,10,5,4,1,1.014444774,8,4,3,7,5,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7547,2018-06-21,Group Stage,Denmark,Australia,Australia,Away,53.4,1759.2840000000008,13,5,4,4,1.412191891,10,4,5,6,4,0,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7535,2018-06-17,Group Stage,Costa Rica,Serbia,Costa Rica,Home,50.6,1567.998000000001,10,3,3,4,0.5960217237,8,1,5,18,11,2,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7535,2018-06-17,Group Stage,Costa Rica,Serbia,Serbia,Away,49.4,1531.5259999999978,12,2,7,3,1.9925690040000001,10,3,4,13,11,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+8649,2018-07-06,Quarter-finals,Uruguay,France,Uruguay,Home,41.5,1177.1610000000014,10,4,5,1,0.693195278,4,0,4,22,11,2,0,0,StatsBomb Open Data — FIFA World Cup 2018
+8649,2018-07-06,Quarter-finals,Uruguay,France,France,Away,58.5,1659.348,11,2,8,1,0.5387829577000001,4,4,3,18,14,2,0,2,StatsBomb Open Data — FIFA World Cup 2018
+8658,2018-07-15,Final,France,Croatia,France,Home,32.9,890.1160000000006,8,6,1,1,1.0979636080000001,3,1,2,14,9,1,0,3,StatsBomb Open Data — FIFA World Cup 2018
+8658,2018-07-15,Final,France,Croatia,Croatia,Away,67.1,1817.9809999999989,15,3,8,4,1.4802876897,11,3,6,14,8,1,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7582,2018-07-01,Round of 16,Spain,Russia,Spain,Home,80.1,3575.9190000000017,24,9,8,7,1.4411031539999999,20,0,6,6,13,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7582,2018-07-01,Round of 16,Spain,Russia,Russia,Away,19.9,890.951000000001,8,1,3,4,1.406426809,5,9,5,21,4,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7552,2018-06-23,Group Stage,Belgium,Tunisia,Belgium,Home,51.3,1486.8159999999996,23,11,8,4,5.336422204999999,13,3,3,13,12,0,0,5,StatsBomb Open Data — FIFA World Cup 2018
+7552,2018-06-23,Group Stage,Belgium,Tunisia,Tunisia,Away,48.7,1409.9159999999981,17,5,9,3,1.1881780826,13,6,2,15,9,1,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7532,2018-06-16,Group Stage,Peru,Denmark,Peru,Home,54.0,1503.4620000000032,17,6,8,3,1.9263781919999998,14,2,3,12,14,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7532,2018-06-16,Group Stage,Peru,Denmark,Denmark,Away,46.0,1278.8019999999995,11,3,5,3,1.1215676380000001,5,6,7,21,10,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7560,2018-06-25,Group Stage,Spain,Morocco,Spain,Home,74.3,2228.342000000001,18,3,13,2,2.6044931,16,1,7,6,8,0,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7560,2018-06-25,Group Stage,Spain,Morocco,Morocco,Away,25.7,771.2089999999993,8,3,4,1,1.071760675,6,1,1,18,3,6,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7533,2018-06-17,Group Stage,Brazil,Switzerland,Brazil,Home,58.4,1948.7950000000028,21,4,10,7,1.8665897939999998,11,1,7,12,10,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7533,2018-06-17,Group Stage,Brazil,Switzerland,Switzerland,Away,41.6,1390.7179999999994,7,2,4,1,0.4721066513,5,3,2,21,8,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7564,2018-06-26,Group Stage,Nigeria,Argentina,Nigeria,Home,30.4,868.3829999999992,9,3,5,1,1.305345181,5,1,3,21,12,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7564,2018-06-26,Group Stage,Nigeria,Argentina,Argentina,Away,69.6,1985.3659999999998,8,3,4,1,0.8505598590000001,5,2,5,17,15,3,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7579,2018-06-30,Round of 16,Uruguay,Portugal,Uruguay,Home,30.8,908.7780000000016,7,3,3,1,0.47600794099999993,3,3,2,14,12,0,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7579,2018-06-30,Round of 16,Uruguay,Portugal,Portugal,Away,69.2,2040.2829999999997,21,4,9,8,0.9955767280999999,15,1,9,13,8,1,0,1,StatsBomb Open Data — FIFA World Cup 2018
+7577,2018-06-15,Group Stage,Morocco,Iran,Morocco,Home,67.1,1667.4489999999976,14,3,6,5,1.0591950264999999,10,2,5,22,7,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7577,2018-06-15,Group Stage,Morocco,Iran,Iran,Away,32.9,816.1570000000023,8,2,4,2,0.6975558777,2,3,2,16,19,3,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7525,2018-06-14,Group Stage,Russia,Saudi Arabia,Russia,Home,38.3,1174.3859999999981,14,7,3,4,1.2816009420000003,8,0,6,23,9,1,0,5,StatsBomb Open Data — FIFA World Cup 2018
+7525,2018-06-14,Group Stage,Russia,Saudi Arabia,Saudi Arabia,Away,61.7,1895.7090000000014,6,0,3,3,0.24880649999999999,4,2,2,12,16,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7566,2018-06-27,Group Stage,Mexico,Sweden,Mexico,Home,75.5,1929.9920000000016,22,3,10,9,1.6107035277000001,17,3,7,16,9,3,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7566,2018-06-27,Group Stage,Mexico,Sweden,Sweden,Away,24.5,626.881999999999,15,5,9,1,2.7904868150000004,8,3,3,18,13,2,0,2,StatsBomb Open Data — FIFA World Cup 2018
+8651,2018-07-07,Quarter-finals,Sweden,England,Sweden,Home,42.1,1255.8849999999995,8,3,4,1,0.8341866389999999,5,0,1,14,8,2,0,0,StatsBomb Open Data — FIFA World Cup 2018
+8651,2018-07-07,Quarter-finals,Sweden,England,England,Away,57.9,1724.0689999999995,12,2,3,7,0.75823599,4,3,6,8,10,1,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7567,2018-06-27,Group Stage,South Korea,Germany,South Korea,Home,24.9,839.5319999999997,12,5,6,1,1.774630282,5,6,3,16,6,4,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7567,2018-06-27,Group Stage,South Korea,Germany,Germany,Away,75.1,2533.8820000000005,29,6,13,10,2.706400562,24,3,8,7,8,0,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7541,2018-06-19,Group Stage,Colombia,Japan,Colombia,Home,40.5,1321.9259999999997,10,3,3,4,0.8062560289999999,8,4,3,15,8,2,1,1,StatsBomb Open Data — FIFA World Cup 2018
+7541,2018-06-19,Group Stage,Colombia,Japan,Japan,Away,59.5,1944.9790000000003,14,6,5,3,2.32067396,9,2,6,11,13,0,0,2,StatsBomb Open Data — FIFA World Cup 2018
+8655,2018-07-10,Semi-finals,France,Belgium,France,Home,36.3,1171.9049999999993,19,5,9,5,1.681686764,15,2,4,6,14,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
+8655,2018-07-10,Semi-finals,France,Belgium,Belgium,Away,63.7,2057.7900000000004,9,2,6,1,0.5668682939999999,7,4,5,17,4,3,0,0,StatsBomb Open Data — FIFA World Cup 2018
+8657,2018-07-14,3rd Place Final,Belgium,England,Belgium,Home,42.5,1601.9789999999991,11,4,3,4,1.32065846,7,5,4,12,2,1,0,2,StatsBomb Open Data — FIFA World Cup 2018
+8657,2018-07-14,3rd Place Final,Belgium,England,England,Away,57.5,2168.6359999999954,15,5,7,3,1.335356625,15,2,5,4,7,2,0,0,StatsBomb Open Data — FIFA World Cup 2018
+8652,2018-07-07,Quarter-finals,Russia,Croatia,Russia,Home,31.1,1219.6539999999998,13,6,5,2,1.070939122,7,2,6,24,14,1,0,2,StatsBomb Open Data — FIFA World Cup 2018
+8652,2018-07-07,Quarter-finals,Russia,Croatia,Croatia,Away,68.9,2698.798999999999,18,4,10,4,1.650474576,9,4,8,18,15,4,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7563,2018-06-26,Group Stage,Denmark,France,Denmark,Home,34.5,1138.1870000000006,5,1,1,3,0.13895808480000002,2,4,4,11,10,1,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7563,2018-06-26,Group Stage,Denmark,France,France,Away,65.5,2165.624000000001,11,4,6,1,0.41814049500000006,10,1,2,10,6,0,0,0,StatsBomb Open Data — FIFA World Cup 2018
+7556,2018-06-24,Group Stage,Japan,Senegal,Japan,Home,55.1,1538.0139999999983,7,3,2,2,0.982192996,4,5,2,9,12,2,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7556,2018-06-24,Group Stage,Japan,Senegal,Senegal,Away,44.9,1251.9689999999996,15,7,7,1,1.8782642929999998,10,1,5,15,7,3,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7559,2018-06-25,Group Stage,Saudi Arabia,Egypt,Saudi Arabia,Home,65.0,2198.0500000000006,21,7,9,5,2.545815476,11,0,6,9,9,0,0,2,StatsBomb Open Data — FIFA World Cup 2018
+7559,2018-06-25,Group Stage,Saudi Arabia,Egypt,Egypt,Away,35.0,1181.3259999999996,8,1,6,1,0.92372594,6,5,1,17,7,2,0,1,StatsBomb Open Data — FIFA World Cup 2018
