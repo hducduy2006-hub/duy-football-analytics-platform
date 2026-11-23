@@ -10,11 +10,25 @@ env/
 
 # Large dataset files (>100MB rejected by GitHub)
 sample_data/opta_ucl/ucl_events.parquet
+sample_data/opta_modern/*_events.parquet
+sample_data/pro_analytics/wc2018_events.parquet
 sample_data/events/
 sample_data/lineups/
 sample_data/_opta_raw/
+sample_data/_tmp_opta_dl/
 
 # Local databases and runtime state
 sofascore_platform.db
+sofascore_platform.db-wal
+sofascore_platform.db-shm
+server_logs/
+server_status.json
+.cache/
 .DS_Store
 Thumbs.db
+
+# Local-only scripts & notes
+app_2535_dong.py
+import streamlit as st.txt
+run_server_watchdog.ps1
+start_public_server.bat

@@ -19,6 +19,7 @@ from api_server import (
     ensure_api_server_running,
     predict_match_ai_payload,
 )
+from team_logos_store import get_team_logo_url
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "sofascore_platform.db")
@@ -36,6 +37,19 @@ def _s(val, default: str = "") -> str:
         return default
     txt = str(val).strip()
     return default if not txt or txt.lower() == "nan" else txt
+
+
+def _safe_minute_int(val, default: int = 0) -> int:
+    if val is None or val == "":
+        return default
+    if isinstance(val, (int, float)):
+        return default if pd.isna(val) else int(val)
+    s = str(val).replace("′", "").replace("'", "").strip().split("+")[0].strip()
+    try:
+        return int(float(s))
+    except Exception:
+        digits = "".join(ch for ch in s if ch.isdigit())
+        return int(digits) if digits else default
 
 
 def _json_default(obj):
@@ -105,25 +119,41 @@ def _map_opta_tactical_pos(pos_raw: str, side_raw: str) -> str:
     return ""
 
 
-@st.cache_data(show_spinner=False, max_entries=32)
-def _load_opta_ucl_cached(opta_mid: str, home_team: str, away_team: str, ht_id: str, at_id: str, sample_dir: str):
-    opta_dir = os.path.join(sample_dir, "opta_ucl")
-    lu_path = os.path.join(opta_dir, "ucl_lineups.parquet")
-    ev_path = os.path.join(opta_dir, "ucl_events.parquet")
+@st.cache_data(show_spinner=False, max_entries=48, ttl=1800)
+def _load_opta_ucl_cached(
+    opta_mid: str,
+    home_team: str,
+    away_team: str,
+    ht_id: str,
+    at_id: str,
+    sample_dir: str,
+    events_rel_path: str = "opta_ucl/ucl_events.parquet",
+    lineups_rel_path: str = "opta_ucl/ucl_lineups.parquet",
+):
+    lu_path = os.path.join(sample_dir, lineups_rel_path)
+    ev_path = os.path.join(sample_dir, events_rel_path)
+    if not os.path.isfile(ev_path):
+        try:
+            from cloud_data_bootstrap import ensure_sample_file
+            ensure_sample_file(events_rel_path)
+        except Exception:
+            pass
 
     lu_df = pd.read_parquet(lu_path, filters=[("match_id", "==", opta_mid)]) if os.path.isfile(lu_path) else pd.DataFrame()
     ev_df = pd.read_parquet(ev_path, filters=[("match_id", "==", opta_mid)]) if os.path.isfile(ev_path) else pd.DataFrame()
 
-    def _estimate_xg_local(lx, ly):
+    def _estimate_xg_local(lx, ly, q_str: str = ""):
+        if '"9":' in q_str:
+            return 0.76
         if lx is None or ly is None or pd.isna(lx) or pd.isna(ly):
-            return 0.10
-        dx = 120.0 - float(lx)
+            return 0.08
+        dx = max(0.5, 120.0 - float(lx))
         dy = 40.0 - float(ly)
         dist = math.hypot(dx, dy)
-        angle = max(0.05, math.atan2(8.0 * dx, max(1.0, dx * dx + dy * dy - 16.0)))
-        logit = 0.85 - 0.095 * dist + 1.25 * angle
+        angle = max(0.04, math.atan2(8.0 * dx, max(1.0, dx * dx + dy * dy - 16.0)))
+        logit = -0.95 - 0.125 * dist + 1.45 * angle
         prob = 1.0 / (1.0 + math.exp(-logit))
-        return round(min(0.95, max(0.01, prob)), 2)
+        return round(min(0.88, max(0.01, prob)), 2)
 
     custom_lineups = {}
     match_squads = {}
@@ -301,7 +331,7 @@ def _load_opta_ucl_cached(opta_mid: str, home_team: str, away_team: str, ht_id: 
                     stats_dict[opp]["goals"] += 1
                 else:
                     ev_type = "Shot"
-                    s_xg = _estimate_xg_local(lx, ly)
+                    s_xg = _estimate_xg_local(lx, ly, q_str)
                     stats_dict[t_name]["shots"] += 1
                     stats_dict[t_name]["xg"] += s_xg
                     if tid_val == 16:
@@ -425,7 +455,11 @@ def load_opta_ucl_match_bundle(match_meta: dict, sample_dir: str):
     at = str(match_meta.get("away_team") or "Away")
     ht_id = str(match_meta.get("home_team_id") or "")
     at_id = str(match_meta.get("away_team_id") or "")
-    ev_df, stats_dict, custom_lineups, match_squads = _load_opta_ucl_cached(opta_mid, ht, at, ht_id, at_id, sample_dir)
+    ev_rel = str(match_meta.get("events_rel_path") or "opta_ucl/ucl_events.parquet")
+    lu_rel = str(match_meta.get("lineups_rel_path") or "opta_ucl/ucl_lineups.parquet")
+    ev_df, stats_dict, custom_lineups, match_squads = _load_opta_ucl_cached(
+        opta_mid, ht, at, ht_id, at_id, sample_dir, ev_rel, lu_rel
+    )
     current_match = {
         "id": match_meta.get("id", f"opta_ucl_{opta_mid}"),
         "stage": match_meta.get("stage", "UEFA Champions League"),
@@ -447,42 +481,44 @@ def load_opta_ucl_match_bundle(match_meta: dict, sample_dir: str):
 # ==========================================================
 _I18N = {
     "vi": {
-        "nav_title": "🧭 Không gian nền tảng",
-        "ws_match": "🏟️ Chi Tiết Trận Đấu (Match Center)",
-        "ws_live": "🔴 Trực Tiếp & Đa Trận (Live & Multi-View)",
-        "ws_hub": "🏆 Giải Đấu, BXH & Chuyển Nhượng",
-        "ws_ai": "⚔️ So Sánh, AI & Xuất Dữ Liệu / API",
+        "nav_title": "ĐIỀU HƯỚNG",
+        "ws_today": "📅  Lịch Đấu Hôm Nay",
+        "ws_match": "🏟️  Phân Tích Trận Đấu",
+        "ws_prematch": "🔮  Trung Tâm AI & Dự Đoán",
+        "ws_hub": "🏆  Bảng Xếp Hạng & Lịch Đấu",
+        "ws_live": "📡  Trực Tiếp & Tiện Ích",
         "search_placeholder": "Nhập tên đội, cầu thủ, giải đấu...",
-        "tab_lineup": "👥 Đội Hình (Lineups)",
-        "tab_stats": "📊 Thống Kê & Momentum",
-        "tab_shotmap": "🎯 Bản Đồ Sút (Shot Map)",
-        "tab_player": "🔥 Cầu Thủ (Heatmap & Pass)",
-        "tab_network": "🕸️ Mạng Lưới Chuyền",
-        "tab_ai_news": "🤖 AI Dự Đoán, Bình Luận & Tin Tức",
-        "fav_add": "☆ Lưu Yêu Thích",
-        "fav_saved": "⭐ Đã Yêu Thích",
-        "highlights_btn": "🎬 Video Highlights",
-        "share_btn": "📤 Chia Sẻ Social",
-        "export_btn": "📥 Xuất Dữ Liệu",
+        "tab_lineup": "Đội Hình",
+        "tab_stats": "Thống Kê",
+        "tab_shotmap": "Sút & xG",
+        "tab_player": "Cầu Thủ",
+        "tab_network": "Chuyền Bóng",
+        "tab_ai_news": "AI & Diễn Biến",
+        "fav_add": "☆ Yêu thích",
+        "fav_saved": "★ Đã lưu",
+        "highlights_btn": "▶ Highlights",
+        "share_btn": "Chia sẻ",
+        "export_btn": "Xuất dữ liệu",
     },
     "en": {
-        "nav_title": "🧭 Platform Workspace",
-        "ws_match": "🏟️ Match Analytics Center",
-        "ws_live": "🔴 Live Score & Multi-Match View",
-        "ws_hub": "🏆 Standings, Fixtures & Transfers",
-        "ws_ai": "⚔️ Player Compare, AI & Export / API",
+        "nav_title": "NAVIGATION",
+        "ws_today": "📅  Today & Schedule",
+        "ws_match": "🏟️  Match Analytics",
+        "ws_prematch": "🔮  AI & Predictions Lab",
+        "ws_hub": "🏆  Standings & Fixtures",
+        "ws_live": "📡  Live & Pro Tools",
         "search_placeholder": "Search teams, players, matches...",
-        "tab_lineup": "👥 Lineups & Ratings",
-        "tab_stats": "📊 Stats & Momentum",
-        "tab_shotmap": "🎯 2D Shot Map & xG",
-        "tab_player": "🔥 Player Heatmap & Passes",
-        "tab_network": "🕸️ Passing Network",
-        "tab_ai_news": "🤖 AI Predictor, Live Feed & News",
-        "fav_add": "☆ Add Favourite",
-        "fav_saved": "⭐ Favourited",
-        "highlights_btn": "🎬 Official Highlights",
-        "share_btn": "📤 Share Social",
-        "export_btn": "📥 Export Data",
+        "tab_lineup": "Lineups",
+        "tab_stats": "Stats",
+        "tab_shotmap": "Shot Map",
+        "tab_player": "Players",
+        "tab_network": "Pass Network",
+        "tab_ai_news": "AI & Feed",
+        "fav_add": "☆ Favourite",
+        "fav_saved": "★ Saved",
+        "highlights_btn": "▶ Highlights",
+        "share_btn": "Share",
+        "export_btn": "Export",
     },
 }
 
@@ -492,14 +528,27 @@ def tr(key: str, lang: str = "vi") -> str:
 
 
 # ==========================================================
-# 🗄️ 2. CSDL SQLITE + XÁC THỰC AUTH + YÊU THÍCH (#22, #28, #44)
+# 🗄️ 2. CSDL SQLITE (WAL CONCURRENT MODE) + XÁC THỰC + YÊU THÍCH (#22, #28, #44)
 # ==========================================================
+_GUEST_SENTINEL = "__guest_session__"
+
+
 def _hash_pw(password: str) -> str:
     return hashlib.sha256(("sofascore_salt_2026::" + str(password)).encode("utf-8")).hexdigest()
 
 
+def _db_connect():
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
+    conn.execute("PRAGMA busy_timeout=15000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    return conn
+
+
+@st.cache_resource(show_spinner=False)
 def init_platform_db():
-    with sqlite3.connect(DB_PATH) as conn:
+    with _db_connect() as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -548,13 +597,18 @@ def init_platform_db():
                 ("demo", "Chuyên Gia Phân Tích (Demo)", _hash_pw("123456"), "analyst", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             )
         conn.commit()
+    return True
+
+
+def _is_guest_user(username: str) -> bool:
+    return (not username) or username in (_GUEST_SENTINEL, "guest")
 
 
 def authenticate_user(username: str, password: str):
     u = str(username or "").strip().lower()
     if not u or not password:
         return None
-    with sqlite3.connect(DB_PATH) as conn:
+    with _db_connect() as conn:
         row = conn.execute(
             "SELECT username, display_name, role FROM users WHERE username = ? AND password_hash = ?",
             (u, _hash_pw(password)),
@@ -569,8 +623,10 @@ def register_user(username: str, display_name: str, password: str):
     dn = str(display_name or u).strip()
     if len(u) < 3 or len(str(password or "")) < 4:
         return False, "Tên đăng nhập ≥ 3 ký tự và mật khẩu ≥ 4 ký tự."
+    if u in (_GUEST_SENTINEL, "guest"):
+        return False, "Tên đăng nhập này không khả dụng."
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with _db_connect() as conn:
             conn.execute(
                 "INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
                 (u, dn, _hash_pw(password), "member", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
@@ -582,46 +638,63 @@ def register_user(username: str, display_name: str, password: str):
 
 
 def is_favorite(username: str, item_type: str, item_id: str) -> bool:
-    if not username:
-        return False
-    with sqlite3.connect(DB_PATH) as conn:
+    iid = str(item_id)
+    if _is_guest_user(username):
+        g_favs = st.session_state.get("_guest_favorites") or {}
+        return (item_type, iid) in g_favs
+    with _db_connect() as conn:
         row = conn.execute(
             "SELECT 1 FROM favorites WHERE username = ? AND item_type = ? AND item_id = ?",
-            (username, item_type, str(item_id)),
+            (username, item_type, iid),
         ).fetchone()
     return row is not None
 
 
 def toggle_favorite(username: str, item_type: str, item_id: str, item_label: str, comp_name: str = "") -> bool:
-    u = username or "guest"
     iid = str(item_id)
-    with sqlite3.connect(DB_PATH) as conn:
+    if _is_guest_user(username):
+        g_favs = st.session_state.setdefault("_guest_favorites", {})
+        k = (item_type, iid)
+        if k in g_favs:
+            del g_favs[k]
+            return False
+        g_favs[k] = {
+            "item_type": item_type,
+            "item_id": iid,
+            "item_label": str(item_label),
+            "comp_name": str(comp_name),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return True
+    with _db_connect() as conn:
         exists = conn.execute(
             "SELECT 1 FROM favorites WHERE username = ? AND item_type = ? AND item_id = ?",
-            (u, item_type, iid),
+            (username, item_type, iid),
         ).fetchone()
         if exists:
             conn.execute(
                 "DELETE FROM favorites WHERE username = ? AND item_type = ? AND item_id = ?",
-                (u, item_type, iid),
+                (username, item_type, iid),
             )
             conn.commit()
             return False
         else:
             conn.execute(
                 "INSERT INTO favorites (username, item_type, item_id, item_label, comp_name, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (u, item_type, iid, str(item_label), str(comp_name), datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                (username, item_type, iid, str(item_label), str(comp_name), datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             )
             conn.commit()
             return True
 
 
 def list_favorites(username: str):
-    u = username or "guest"
-    with sqlite3.connect(DB_PATH) as conn:
+    if _is_guest_user(username):
+        g_favs = st.session_state.get("_guest_favorites") or {}
+        return list(reversed(list(g_favs.values())))
+    with _db_connect() as conn:
         rows = conn.execute(
             "SELECT item_type, item_id, item_label, comp_name, created_at FROM favorites WHERE username = ? ORDER BY id DESC",
-            (u,),
+            (username,),
         ).fetchall()
     return [
         {"item_type": r[0], "item_id": r[1], "item_label": r[2], "comp_name": r[3], "created_at": r[4]}
@@ -630,8 +703,18 @@ def list_favorites(username: str):
 
 
 def save_user_prediction(username: str, match_id: str, match_label: str, pred_home: int, pred_away: int, note: str = ""):
-    u = username or "guest"
-    with sqlite3.connect(DB_PATH) as conn:
+    mid = str(match_id)
+    if _is_guest_user(username):
+        g_preds = st.session_state.setdefault("_guest_predictions", {})
+        g_preds[mid] = {
+            "pred_home": int(pred_home),
+            "pred_away": int(pred_away),
+            "note": str(note),
+            "match_label": str(match_label),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return
+    with _db_connect() as conn:
         conn.execute(
             """
             INSERT INTO user_predictions (username, match_id, match_label, pred_home, pred_away, note, created_at)
@@ -640,17 +723,20 @@ def save_user_prediction(username: str, match_id: str, match_label: str, pred_ho
                 pred_home=excluded.pred_home, pred_away=excluded.pred_away,
                 note=excluded.note, created_at=excluded.created_at
             """,
-            (u, str(match_id), str(match_label), int(pred_home), int(pred_away), str(note), datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            (username, mid, str(match_label), int(pred_home), int(pred_away), str(note), datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         )
         conn.commit()
 
 
 def get_user_prediction(username: str, match_id: str):
-    u = username or "guest"
-    with sqlite3.connect(DB_PATH) as conn:
+    mid = str(match_id)
+    if _is_guest_user(username):
+        g_preds = st.session_state.get("_guest_predictions") or {}
+        return g_preds.get(mid)
+    with _db_connect() as conn:
         row = conn.execute(
             "SELECT pred_home, pred_away, note, created_at FROM user_predictions WHERE username = ? AND match_id = ?",
-            (u, str(match_id)),
+            (username, mid),
         ).fetchone()
     if row:
         return {"pred_home": row[0], "pred_away": row[1], "note": row[2], "created_at": row[3]}
@@ -694,7 +780,7 @@ def _parse_euro_millions(val_str: str) -> float:
         return 0.0
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def load_fifa_transfer_db():
     if not os.path.exists(FIFA_CSV_PATH):
         return pd.DataFrame(), {}, {}
@@ -717,11 +803,14 @@ def load_fifa_transfer_db():
     exact_map = {}
     surname_nat_map = {}
     surname_only_map = {}
-    for idx, row in df.iterrows():
-        nm = str(row["Name"] or "").strip()
-        nat = _ascii_key(row.get("Nationality", ""))
-        k_full = _ascii_key(nm)
-        if k_full and k_full not in exact_map:
+    names_col = df["Name"].fillna("").astype(str).tolist()
+    nats_col = df["Nationality"].fillna("").astype(str).tolist() if "Nationality" in df.columns else [""] * len(names_col)
+    for idx, (nm_raw, nat_raw) in enumerate(zip(names_col, nats_col)):
+        k_full = _ascii_key(nm_raw)
+        if not k_full:
+            continue
+        nat = _ascii_key(nat_raw) if nat_raw else ""
+        if k_full not in exact_map:
             exact_map[k_full] = idx
         parts = k_full.split()
         if parts:
@@ -959,7 +1048,7 @@ th {{ color: #38BDF8; }}
 <div class="banner">
     <div><b>{stage}</b> • 🏟️ {stadium} • 👨‍⚖️ {ref}</div>
     <div class="score">{ht} &nbsp; {hs} - {as_} &nbsp; {at}</div>
-    <div>Xuất tự động từ Nền tảng SofaScore Football Big Data Analytics</div>
+    <div>Xuất tự động từ Nền tảng NCKH TUD65 Football Big Data Analytics</div>
 </div>
 <div class="card"><h3>⚽ Danh sách bàn thắng</h3><ul>{goals_li}</ul></div>
 <div class="grid">
@@ -984,7 +1073,7 @@ def render_match_action_bar(
     away_source_stats,
     lang: str = "vi",
 ):
-    curr_user = (st.session_state.get("auth_user") or {}).get("username", "demo")
+    curr_user = (st.session_state.get("auth_user") or {}).get("username", _GUEST_SENTINEL)
     mid = str(current_match.get("id"))
     ht = str(current_match.get("home_team", ""))
     at = str(current_match.get("away_team", ""))
@@ -993,7 +1082,15 @@ def render_match_action_bar(
     stage_str = str(current_match.get("stage", ""))
     match_title = f"{ht} {hs} - {as_} {at}"
 
-    c1, c2, c3, c4 = st.columns(4, gap="small")
+    ev_cnt = len(match_events) if match_events is not None else 0
+    c_meta, c1, c2, c3, c4 = st.columns([2.2, 0.9, 0.95, 0.85, 0.95], gap="small")
+    with c_meta:
+        st.markdown(compact_html(f"""
+        <div style="display:flex;align-items:center;height:36px;color:#64748B;font-size:12px;font-weight:600;gap:8px;">
+            <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#10B981;"></span>
+            <span>Event Data · <b style="color:#CBD5E1;">{ev_cnt:,}</b> sự kiện tọa độ chuẩn Opta/StatsBomb</span>
+        </div>
+        """), unsafe_allow_html=True)
 
     with c1:
         fav_now = is_favorite(curr_user, "match", mid)
@@ -1009,74 +1106,84 @@ def render_match_action_bar(
 
     with c3:
         with st.popover(tr("share_btn", lang), width="stretch"):
-            scorers_txt = ", ".join(f"{g.get('player')} ({g.get('minute')}')" for g in (current_match.get("goals") or [])) or "Hòa 0-0"
+            scorers_txt = ", ".join(f"{g.get('player')} ({g.get('minute_display') or g.get('minute')}')" for g in (current_match.get("goals") or [])) or "Hòa 0-0"
             share_summary = (
                 f"⚽ [{stage_str}] {ht} {hs} - {as_} {at}\n"
                 f"🥅 Bàn thắng: {scorers_txt}\n"
-                f"🏟️ Sân: {current_match.get('stadium')} | 📊 Phân tích trên SofaScore Big Data Analytics"
+                f"🏟️ Sân: {current_match.get('stadium')} | 📊 Phân tích trên NCKH TUD65 Football Analytics"
             )
             st.markdown("**📋 Thẻ tóm tắt chia sẻ nhanh (Copy 1 chạm):**")
             st.code(share_summary, language="text")
             enc_text = urllib.parse.quote(share_summary)
             s_c1, s_c2 = st.columns(2)
             s_c1.link_button("🐦 Chia sẻ lên X", f"https://twitter.com/intent/tweet?text={enc_text}", width="stretch")
-            s_c2.link_button("✈️ Gửi Telegram", f"https://t.me/share/url?url=http://localhost:8501&text={enc_text}", width="stretch")
+            s_c2.link_button("✈️ Gửi Telegram", f"https://t.me/share/url?url={urllib.parse.quote('https://nckh-tud65.app')}&text={enc_text}", width="stretch")
 
     with c4:
         with st.popover(tr("export_btn", lang), width="stretch"):
-            st.markdown("**📥 Xuất dữ liệu phân tích mở (Độc quyền vượt FotMob/SofaScore):**")
-            players_export_df = pd.DataFrame([
-                {
-                    "team": p.get("team_name"),
-                    "player": p.get("display_name"),
-                    "full_name": p.get("name"),
-                    "position": "Sub" if p.get("is_sub") else p.get("pos"),
-                    "rating": p.get("rating"),
-                    "goals": p.get("goals_count"),
-                    "assists": p.get("assists_count"),
-                    "passes": p.get("passes"),
-                    "tackles": p.get("tackles"),
-                }
-                for p in all_selectable_players
-            ])
+            st.markdown("**📥 Xuất dữ liệu phân tích mở (Tạo tức thì khi bấm tải):**")
+
+            def _build_players_export_df():
+                return pd.DataFrame([
+                    {
+                        "team": p.get("team_name"),
+                        "player": p.get("display_name"),
+                        "full_name": p.get("name"),
+                        "position": "Sub" if p.get("is_sub") else p.get("pos"),
+                        "rating": p.get("rating"),
+                        "goals": p.get("goals_count"),
+                        "assists": p.get("assists_count"),
+                        "passes": p.get("passes"),
+                        "tackles": p.get("tackles"),
+                    }
+                    for p in all_selectable_players
+                ])
+
             st.download_button(
                 "📊 Tải bảng Điểm & Chỉ số Cầu thủ (.CSV)",
-                data=players_export_df.to_csv(index=False).encode("utf-8-sig"),
+                data=lambda: _build_players_export_df().to_csv(index=False).encode("utf-8-sig"),
                 file_name=f"player_ratings_{mid}.csv",
                 mime="text/csv",
                 width="stretch",
+                on_click="ignore",
                 key=f"dl_players_csv_{mid}",
             )
             if match_events is not None and not match_events.empty:
                 keep_cols = [c for c in ["minute", "second", "period", "team_name", "player_name", "position_name", "type_name", "location_x", "location_y", "pass_recipient_name", "shot_outcome_name", "shot_statsbomb_xg"] if c in match_events.columns]
                 st.download_button(
                     "⚡ Tải Dữ liệu Sự kiện gốc (.CSV)",
-                    data=match_events[keep_cols].to_csv(index=False).encode("utf-8-sig"),
+                    data=lambda _kc=keep_cols: match_events[_kc].to_csv(index=False).encode("utf-8-sig"),
                     file_name=f"match_events_{mid}.csv",
                     mime="text/csv",
                     width="stretch",
+                    on_click="ignore",
                     key=f"dl_events_csv_{mid}",
                 )
-            json_pkg = {
-                "match": current_match,
-                "exported_at": datetime.now().isoformat(),
-                "players": players_export_df.to_dict(orient="records"),
-            }
             st.download_button(
                 "🗂️ Tải Gói Dữ liệu JSON (.JSON)",
-                data=json.dumps(json_pkg, ensure_ascii=False, indent=2, default=_json_default).encode("utf-8"),
+                data=lambda: json.dumps(
+                    {
+                        "match": current_match,
+                        "exported_at": datetime.now().isoformat(),
+                        "players": _build_players_export_df().to_dict(orient="records"),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    default=_json_default,
+                ).encode("utf-8"),
                 file_name=f"match_analytics_{mid}.json",
                 mime="application/json",
                 width="stretch",
+                on_click="ignore",
                 key=f"dl_json_{mid}",
             )
-            report_html = build_standalone_match_report_html(current_match, home_lineup, away_lineup, home_source_stats, away_source_stats)
             st.download_button(
                 "🖨️ Xuất Báo cáo Trận đấu (.HTML / In PDF)",
-                data=report_html.encode("utf-8"),
+                data=lambda: build_standalone_match_report_html(current_match, home_lineup, away_lineup, home_source_stats, away_source_stats).encode("utf-8"),
                 file_name=f"match_report_{mid}.html",
                 mime="text/html",
                 width="stretch",
+                on_click="ignore",
                 key=f"dl_html_{mid}",
             )
 
@@ -1112,7 +1219,7 @@ def render_attack_momentum_and_defense(match_events: pd.DataFrame, current_match
     minutes_x = list(range(1, max_m + 1))
     colors = ["#38BDF8" if v >= 0 else "#FF4D6D" for v in norm_mom]
 
-    st.markdown("#### 🌊 Biểu Đồ Sóng Áp Lực Thế Trận Theo Phút (SofaScore Attack Momentum)")
+    st.markdown("#### 🌊 Biểu Đồ Sóng Áp Lực Thế Trận Theo Phút (Attack Momentum)")
     with st.container(border=True):
         fig_mom = go.Figure()
         fig_mom.add_trace(go.Bar(
@@ -1124,13 +1231,14 @@ def render_attack_momentum_and_defense(match_events: pd.DataFrame, current_match
             name="Attack Momentum",
         ))
         for g in (current_match.get("goals") or []):
-            gm = int(g.get("minute", 0) or 0)
+            gm = _safe_minute_int(g.get("minute"))
+            gm_disp = str(g.get("minute_display") or gm)
             if 1 <= gm <= max_m:
                 is_hg = g.get("team") == ht
                 y_pos = 88 if is_hg else -88
                 fig_mom.add_annotation(
                     x=gm, y=y_pos,
-                    text=f"⚽ {gm}′",
+                    text=f"⚽ {gm_disp}′",
                     showarrow=False,
                     font=dict(size=11, color="#FFFFFF", family="Arial Black"),
                     bgcolor="rgba(0, 214, 108, 0.85)" if is_hg else "rgba(255, 77, 109, 0.88)",
@@ -1170,6 +1278,63 @@ def render_attack_momentum_and_defense(match_events: pd.DataFrame, current_match
             <span>🔴 <b>{html.escape(at)}</b> áp đảo: <b style="color:#FF4D6D;">{a_dom_mins} phút</b></span>
         </div>
         """), unsafe_allow_html=True)
+
+    # --- CHỈ SỐ NGHIÊN CỨU HIỆN ĐẠI (FIELD TILT %, PPDA PRESSING, xG/SHOT, BOX TOUCHES — CHUẨN OPTA/UNDERSTAT/FOTMOB) ---
+    if "location_x" in match_events.columns and "team_name" in match_events.columns:
+        df_adv = match_events.copy()
+        df_adv["_lx"] = pd.to_numeric(df_adv["location_x"], errors="coerce")
+        df_adv["_ly"] = pd.to_numeric(df_adv["location_y"], errors="coerce") if "location_y" in df_adv.columns else 40.0
+        h_ev = df_adv[df_adv["team_name"] == ht]
+        a_ev = df_adv[df_adv["team_name"] == at]
+
+        # 1. Field Tilt % (Tỷ lệ hành động ở 1/3 sân đối phương x >= 80)
+        h_f3 = int((h_ev["_lx"] >= 80.0).sum())
+        a_f3 = int((a_ev["_lx"] >= 80.0).sum())
+        tot_f3 = max(1, h_f3 + a_f3)
+        h_ft = round(h_f3 / tot_f3 * 100.0, 1)
+        a_ft = round(100.0 - h_ft, 1)
+
+        # 2. PPDA (Passes Allowed Per Defensive Action ở 60% sân đối phương: đối thủ chuyền ở x <= 72 / ta phòng ngự ở x >= 48)
+        def_types = {"Duel", "Interception", "Foul Committed", "Ball Recovery", "Pressure", "Tackle"}
+        h_passes_build = int(((h_ev["type_name"] == "Pass") & (h_ev["_lx"] <= 72.0)).sum()) if "type_name" in h_ev.columns else 0
+        a_passes_build = int(((a_ev["type_name"] == "Pass") & (a_ev["_lx"] <= 72.0)).sum()) if "type_name" in a_ev.columns else 0
+        h_def_high = max(1, int((h_ev["type_name"].isin(def_types) & (h_ev["_lx"] >= 48.0)).sum())) if "type_name" in h_ev.columns else 1
+        a_def_high = max(1, int((a_ev["type_name"].isin(def_types) & (a_ev["_lx"] >= 48.0)).sum())) if "type_name" in a_ev.columns else 1
+        h_ppda = round(a_passes_build / h_def_high, 1) if a_passes_build > 0 else 0.0
+        a_ppda = round(h_passes_build / a_def_high, 1) if h_passes_build > 0 else 0.0
+
+        # 3. Box Entries / Touches in Opponent Penalty Box (x >= 102, 18 <= y <= 62)
+        h_box = int(((h_ev["_lx"] >= 102.0) & (h_ev["_ly"] >= 18.0) & (h_ev["_ly"] <= 62.0)).sum())
+        a_box = int(((a_ev["_lx"] >= 102.0) & (a_ev["_ly"] >= 18.0) & (a_ev["_ly"] <= 62.0)).sum())
+
+        # 4. Shot Quality (xG / Shot)
+        h_sh = h_ev[h_ev["type_name"] == "Shot"] if "type_name" in h_ev.columns else pd.DataFrame()
+        a_sh = a_ev[a_ev["type_name"] == "Shot"] if "type_name" in a_ev.columns else pd.DataFrame()
+        h_xg_tot = float(pd.to_numeric(h_sh.get("shot_statsbomb_xg", 0), errors="coerce").fillna(0).sum()) if not h_sh.empty else 0.0
+        a_xg_tot = float(pd.to_numeric(a_sh.get("shot_statsbomb_xg", 0), errors="coerce").fillna(0).sum()) if not a_sh.empty else 0.0
+        h_xg_sh = round(h_xg_tot / max(1, len(h_sh)), 3) if not h_sh.empty else 0.0
+        a_xg_sh = round(a_xg_tot / max(1, len(a_sh)), 3) if not a_sh.empty else 0.0
+
+        st.markdown("#### 🔬 Chỉ Số Chiến Thuật Chuyên Sâu (Opta Analyst · FotMob · Understat Pro Metrics)")
+        adv_cols = st.columns(4, gap="small")
+        adv_cards = [
+            ("📐 Field Tilt (Áp Đặt 1/3 Cuối)", f"{h_ft}%", f"{a_ft}%", "Tỷ lệ kiểm soát khu vực tấn công"),
+            ("⚡ PPDA (Cường Độ Pressing)", f"{h_ppda:.1f}", f"{a_ppda:.1f}", "Thấp hơn = Pressing tầm cao gắt hơn"),
+            ("📦 Chạm Bóng Vòng Cấm Đối Thủ", f"{h_box}", f"{a_box}", "Sức ép trực tiếp trong khu 16m50"),
+            ("🎯 Chất Lượng Dứt Điểm (xG/Shot)", f"{h_xg_sh:.2f}", f"{a_xg_sh:.2f}", "Mức độ nguy hiểm TB mỗi cú sút"),
+        ]
+        for idx_ac, (a_title, hv_s, av_s, a_note) in enumerate(adv_cards):
+            adv_cols[idx_ac].markdown(compact_html(f"""
+            <div style="background:#131A26;border:1px solid #26354D;border-radius:12px;padding:11px 13px;text-align:center;">
+                <div style="color:#94A3B8;font-size:11.5px;font-weight:800;margin-bottom:6px;">{a_title}</div>
+                <div style="display:flex;justify-content:space-around;align-items:baseline;margin-bottom:5px;">
+                    <span style="color:#38BDF8;font-size:20px;font-weight:900;">{hv_s}</span>
+                    <span style="color:#475569;font-size:12px;font-weight:800;">vs</span>
+                    <span style="color:#FF4D6D;font-size:20px;font-weight:900;">{av_s}</span>
+                </div>
+                <div style="color:#64748B;font-size:10.5px;">{a_note}</div>
+            </div>
+            """), unsafe_allow_html=True)
 
 
 # ==========================================================
@@ -1227,11 +1392,12 @@ def build_live_commentary_feed(match_events: pd.DataFrame, current_match: dict, 
     ]
 
     for g in (current_match.get("goals") or []):
-        gm = int(g.get("minute", 0) or 0)
+        gm = _safe_minute_int(g.get("minute"))
+        gm_disp = str(g.get("minute_display") or gm)
         if gm <= max_minute and g.get("is_og"):
             items.append({
                 "minute": gm, "type": "goal", "icon": "⚽", "color": "#F97316",
-                "title": f"PHẢN LƯỚI NHÀ! Bàn thắng cho {g.get('team')} ({gm}′)",
+                "title": f"PHẢN LƯỚI NHÀ! Bàn thắng cho {g.get('team')} ({gm_disp}′)",
                 "body": f"Tình huống đốt lưới nhà đáng tiếc của {g.get('player')} giúp {g.get('team')} có bàn thắng!",
             })
 
@@ -1320,8 +1486,43 @@ def render_match_ai_timeline_news_tab(match_events: pd.DataFrame, current_match:
 
     sim = simulate_match_monte_carlo(match_events, ht, at, n_sims=10000)
 
-    st.subheader("🤖 Mô Hình AI Mô Phỏng 10.000 Kịch Bản Trận Đấu (Monte Carlo xG Engine)")
+    # AI Post-Match Fairness & Luck Verdict
+    if hs > as_:
+        win_p = sim["h_win"]
+        verdict_c = "#00E676" if win_p >= 50 else ("#FACC15" if win_p >= 30 else "#FF4D6D")
+        verdict_txt = (
+            f"✅ Chiến thắng hoàn toàn xứng đáng cho {ht} (Xác suất thắng theo xG: {win_p:.1f}%)"
+            if win_p >= 50 else (
+                f"⚖️ Chiến thắng sát nút cho {ht} trong thế trận cân bằng (Xác suất xG: {win_p:.1f}%)"
+                if win_p >= 30 else f"⚡ Cú sốc lớn! {ht} thắng ngược thế trận dù chỉ có {win_p:.1f}% xác suất theo xG!"
+            )
+        )
+    elif as_ > hs:
+        win_p = sim["a_win"]
+        verdict_c = "#00E676" if win_p >= 50 else ("#FACC15" if win_p >= 30 else "#FF4D6D")
+        verdict_txt = (
+            f"✅ Chiến thắng hoàn toàn xứng đáng cho {at} (Xác suất thắng theo xG: {win_p:.1f}%)"
+            if win_p >= 50 else (
+                f"⚖️ Chiến thắng sát nút cho {at} trong thế trận cân bằng (Xác suất xG: {win_p:.1f}%)"
+                if win_p >= 30 else f"⚡ Cú sốc lớn! {at} thắng ngược thế trận dù chỉ có {win_p:.1f}% xác suất theo xG!"
+            )
+        )
+    else:
+        dom_t = ht if sim["h_win"] >= sim["a_win"] else at
+        dom_p = max(sim["h_win"], sim["a_win"])
+        verdict_c = "#38BDF8" if dom_p < 55 else "#FACC15"
+        verdict_txt = (
+            f"⚖️ Tỷ số hòa phản ánh đúng cục diện cân bằng (xG: {sim['h_xg']} vs {sim['a_xg']})"
+            if dom_p < 55 else f"🎯 {dom_t} kém may mắn khi chỉ hòa dù áp đảo cơ hội (Xác suất thắng theo xG: {dom_p:.1f}%)"
+        )
+
+    st.markdown("#### 🤖 Đánh Giá AI Hậu Trận (Monte Carlo 10.000 Kịch Bản xG)")
     with st.container(border=True):
+        st.markdown(compact_html(f"""
+        <div style="background:#0E1420;border:1px solid {verdict_c};border-left:4px solid {verdict_c};border-radius:10px;padding:9px 14px;margin-bottom:12px;color:#F8FAFC;font-size:13px;font-weight:800;">
+            {html.escape(verdict_txt)} &nbsp;·&nbsp; <span style="color:#94A3B8;font-weight:700;">xG: {sim['h_xg']} vs {sim['a_xg']} · Thực tế: {hs}-{as_}</span>
+        </div>
+        """), unsafe_allow_html=True)
         st.markdown(compact_html(f"""
         <div style="margin-bottom:12px;">
             <div style="display:flex;justify-content:space-between;font-size:13.5px;font-weight:800;margin-bottom:6px;">
@@ -1411,7 +1612,7 @@ def render_match_ai_timeline_news_tab(match_events: pd.DataFrame, current_match:
                 f"Xét trên mô hình bàn thắng kỳ vọng (xG), {ht} tạo ra {sim['h_xg']} xG so với {sim['a_xg']} xG của {at}, "
                 f"tương ứng xác suất thắng mô phỏng AI đạt {sim['h_win']}% cho {ht} và {sim['a_win']}% cho {at}."
             )
-            goals_desc = ", ".join(f"{g.get('player')} ({g.get('minute')}′)" for g in (current_match.get("goals") or [])) or "hàng thủ hai đội giữ sạch lưới tuyệt đối"
+            goals_desc = ", ".join(f"{g.get('player')} ({g.get('minute_display') or g.get('minute')}′)" for g in (current_match.get("goals") or [])) or "hàng thủ hai đội giữ sạch lưới tuyệt đối"
             st.markdown(compact_html(f"""
             <div style="background:linear-gradient(145deg,#141D2E,#0E1420);border:1px solid #26354D;border-radius:12px;padding:15px;">
                 <span style="background:rgba(56,189,248,0.16);color:#38BDF8;font-size:11px;font-weight:800;padding:3px 9px;border-radius:999px;text-transform:uppercase;">⚡ Tiêu điểm sau trận</span>
@@ -1432,8 +1633,7 @@ def render_match_ai_timeline_news_tab(match_events: pd.DataFrame, current_match:
 # ==========================================================
 # 🔴 7. KHÔNG GIAN 2: TRỰC TIẾP REAL-TIME & XEM NHIỀU TRẬN CÙNG LÚC (#1, #5, #21, #32)
 # ==========================================================
-@st.fragment(run_every="1.2s")
-def _live_single_match_player_fragment(current_match: dict, match_events: pd.DataFrame, max_ev_m: int):
+def _render_live_single_match_body(current_match: dict, match_events: pd.DataFrame, max_ev_m: int, advance_tick: bool):
     mid = str(current_match["id"])
     cur_key = f"live_cur_val_{mid}"
     play_key = f"live_sim_play_{mid}"
@@ -1446,20 +1646,21 @@ def _live_single_match_player_fragment(current_match: dict, match_events: pd.Dat
         st.session_state[init_key] = True
         st.session_state[cur_key] = 1
         st.session_state[slider_key] = 1
-        st.session_state[play_key] = True
-        st.session_state[speed_key] = 1
+        st.session_state[play_key] = False
+        st.session_state[speed_key] = 2
         st.session_state[interacted_key] = True
 
     just_interacted = bool(st.session_state.pop(interacted_key, False))
     cur_m = int(st.session_state.get(cur_key, 1))
-    is_playing_prev = bool(st.session_state.get(play_key, True))
-    step_val = int(st.session_state.get(speed_key, 1))
+    is_playing_prev = bool(st.session_state.get(play_key, False))
+    step_val = int(st.session_state.get(speed_key, 2))
 
-    # Nhịp tự động 1.2 giây: tự nhích đồng hồ & kéo con trượt tiến lên từ đúng phút người dùng đang chọn
-    if not just_interacted and is_playing_prev and cur_m < max_ev_m:
+    if advance_tick and not just_interacted and is_playing_prev and cur_m < max_ev_m:
         cur_m = min(max_ev_m, cur_m + step_val)
         st.session_state[cur_key] = cur_m
         st.session_state[slider_key] = cur_m
+        if cur_m >= max_ev_m:
+            st.session_state[play_key] = False
     else:
         st.session_state[slider_key] = cur_m
 
@@ -1477,7 +1678,6 @@ def _live_single_match_player_fragment(current_match: dict, match_events: pd.Dat
         tm = max(1, min(max_ev_m, int(target_m)))
         st.session_state[cur_key] = tm
         st.session_state[slider_key] = tm
-        st.session_state[play_key] = True
         st.session_state[interacted_key] = True
 
     c_play, c_spd, c_b1, c_b2, c_b3 = st.columns([1.45, 1.15, 0.95, 0.95, 1.0], gap="small")
@@ -1494,7 +1694,7 @@ def _live_single_match_player_fragment(current_match: dict, match_events: pd.Dat
     c_b3.button("🔥 Phút 80′", on_click=_jump_to_minute, args=(min(80, max_ev_m),), width="stretch", key=f"lv_j80_{mid}")
 
     st.slider(
-        "⏱️ Thanh thời gian trực tiếp (Kéo tới phút bất kỳ — đồng hồ sẽ tự chạy tiếp từ phút bạn chọn):",
+        "⏱️ Thanh thời gian trực tiếp (Kéo tới phút bất kỳ hoặc bật Tự động chạy):",
         1,
         max_ev_m,
         key=slider_key,
@@ -1504,8 +1704,8 @@ def _live_single_match_player_fragment(current_match: dict, match_events: pd.Dat
     minute_now = int(st.session_state.get(cur_key, 1))
     ht = current_match["home_team"]
     at = current_match["away_team"]
-    goals_now = [g for g in (current_match.get("goals") or []) if int(g.get("minute", 0) or 0) <= minute_now]
-    recent_goals = [g for g in goals_now if minute_now - 2 <= int(g.get("minute", 0) or 0) <= minute_now]
+    goals_now = [g for g in (current_match.get("goals") or []) if _safe_minute_int(g.get("minute")) <= minute_now]
+    recent_goals = [g for g in goals_now if minute_now - 2 <= _safe_minute_int(g.get("minute")) <= minute_now]
     hs_now = sum(1 for g in goals_now if g.get("team") == ht)
     as_now = sum(1 for g in goals_now if g.get("team") == at)
 
@@ -1532,7 +1732,7 @@ def _live_single_match_player_fragment(current_match: dict, match_events: pd.Dat
         status_badge = f"🔴 ĐANG PHÁT TRỰC TIẾP • {minute_now}:00"
         badge_style = "background:rgba(239,68,68,0.22);border:1px solid #EF4444;color:#FCA5A5;animation:livePulse 1.1s infinite;"
     else:
-        status_badge = f"⏸️ ĐANG TẠM DỪNG • {minute_now}′"
+        status_badge = f"⏸️ SẴN SÀNG PHÁT • {minute_now}′ (Bật nút trên để chạy)"
         badge_style = "background:rgba(250,204,21,0.18);border:1px solid #FACC15;color:#FDE047;"
 
     goal_flash_html = ""
@@ -1540,27 +1740,27 @@ def _live_single_match_player_fragment(current_match: dict, match_events: pd.Dat
         rg = recent_goals[-1]
         goal_flash_html = (
             f'<div style="margin-top:10px;padding:7px 14px;background:rgba(0,230,118,0.16);border:1px solid #00E676;border-radius:10px;text-align:center;color:#4ADE80;font-weight:900;font-size:13.5px;">'
-            f'⚽ VÀOOOOO!! {html.escape(str(rg.get("player", "")))} ghi bàn cho {html.escape(str(rg.get("team", "")))} ở phút {rg.get("minute")}′!'
+            f'⚽ VÀOOOOO!! {html.escape(str(rg.get("player", "")))} ghi bàn cho {html.escape(str(rg.get("team", "")))} ở phút {rg.get("minute_display") or rg.get("minute")}′!'
             f'</div>'
         )
 
-    scorers_live_str = " • ".join(f"⚽ {html.escape(str(g.get('player')))} ({g.get('minute')}′)" for g in goals_now)
+    scorers_live_str = " • ".join(f"⚽ {html.escape(str(g.get('player')))} ({g.get('minute_display') or g.get('minute')}′)" for g in goals_now)
     scorers_row_html = f'<div style="text-align:center;color:#E2E8F0;font-size:12.5px;margin-top:8px;font-weight:700;">{scorers_live_str}</div>' if scorers_live_str else ""
 
     st.markdown(compact_html(f"""
     <style>@keyframes livePulse {{ 0% {{ opacity: 1; box-shadow: 0 0 0 0 rgba(239,68,68,0.55); }} 70% {{ opacity: 0.78; box-shadow: 0 0 0 9px rgba(239,68,68,0); }} 100% {{ opacity: 1; box-shadow: 0 0 0 0 rgba(239,68,68,0); }} }}</style>
-    <div style="background:linear-gradient(135deg,#131D2E,#0F1726);border:1.5px solid {'#00E676' if recent_goals else '#EF4444'};border-radius:16px;padding:18px 24px;margin-bottom:14px;">
+    <div style="background:linear-gradient(135deg,#131D2E,#0F1726);border:1.5px solid {'#00E676' if recent_goals else '#EF4444'};border-radius:16px;padding:16px 22px;margin-bottom:12px;">
         <div style="text-align:center;margin-bottom:8px;">
-            <span style="{badge_style}font-weight:900;font-size:12.5px;padding:4px 14px;border-radius:999px;letter-spacing:0.06em;display:inline-block;">{status_badge}</span>
+            <span style="{badge_style}font-weight:900;font-size:12px;padding:4px 14px;border-radius:999px;letter-spacing:0.06em;display:inline-block;">{status_badge}</span>
         </div>
-        <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:20px;">
-            <div style="text-align:right;font-size:24px;font-weight:900;color:#38BDF8;">🔵 {html.escape(ht)}</div>
-            <div style="background:#0B0F19;border:1.5px solid #38BDF8;border-radius:14px;padding:10px 24px;font-size:38px;font-weight:900;color:#FFF;">{hs_now} - {as_now}</div>
-            <div style="text-align:left;font-size:24px;font-weight:900;color:#FF4D6D;">{html.escape(at)} 🔴</div>
+        <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px;">
+            <div style="text-align:right;font-size:22px;font-weight:900;color:#38BDF8;">🔵 {html.escape(ht)}</div>
+            <div style="background:#0B0F19;border:1.5px solid #38BDF8;border-radius:14px;padding:8px 22px;font-size:34px;font-weight:900;color:#FFF;">{hs_now} - {as_now}</div>
+            <div style="text-align:left;font-size:22px;font-weight:900;color:#FF4D6D;">{html.escape(at)} 🔴</div>
         </div>
         {scorers_row_html}
         {goal_flash_html}
-        <div style="display:flex;justify-content:space-around;flex-wrap:wrap;gap:10px;margin-top:14px;padding-top:10px;border-top:1px solid #1E293B;font-size:13px;color:#CBD5E1;">
+        <div style="display:flex;justify-content:space-around;flex-wrap:wrap;gap:10px;margin-top:12px;padding-top:10px;border-top:1px solid #1E293B;font-size:12.5px;color:#CBD5E1;">
             <span>🎯 xG trực tiếp: <b style="color:#38BDF8;">{h_xg_now:.2f}</b> vs <b style="color:#FF4D6D;">{a_xg_now:.2f}</b></span>
             <span>👟 Cú sút: <b>{len(h_sh)}</b> vs <b>{len(a_sh)}</b></span>
             <span>🔄 Kiểm soát bóng: <b>{h_pos_now}%</b> vs <b>{a_pos_now}%</b></span>
@@ -1583,22 +1783,44 @@ def _live_single_match_player_fragment(current_match: dict, match_events: pd.Dat
     st.markdown(f'<div style="display:flex;flex-direction:column;gap:6px;">{rows_c}</div>', unsafe_allow_html=True)
 
 
-@st.fragment(run_every="1.5s")
-def _multi_match_live_fragment(all_matches_flat: list, picked_labels: list):
+@st.fragment(run_every="2.0s")
+def _live_single_match_playing_fragment(current_match: dict, match_events: pd.DataFrame, max_ev_m: int):
+    _render_live_single_match_body(current_match, match_events, max_ev_m, advance_tick=True)
+
+
+@st.fragment
+def _live_single_match_paused_fragment(current_match: dict, match_events: pd.DataFrame, max_ev_m: int):
+    _render_live_single_match_body(current_match, match_events, max_ev_m, advance_tick=False)
+
+
+def _live_single_match_player_fragment(current_match: dict, match_events: pd.DataFrame, max_ev_m: int):
+    """Chỉ gắn bộ đếm 2s khi người dùng bật Play — tránh 100 người xem nhàn rỗi làm nghẽn CPU server."""
+    mid = str(current_match["id"])
+    is_play = bool(st.session_state.get(f"live_sim_play_{mid}", False))
+    cur_m = int(st.session_state.get(f"live_cur_val_{mid}", 1))
+    if is_play and cur_m < max_ev_m:
+        _live_single_match_playing_fragment(current_match, match_events, max_ev_m)
+    else:
+        _live_single_match_paused_fragment(current_match, match_events, max_ev_m)
+
+
+def _render_multi_match_live_body(all_matches_flat: list, picked_labels: list, advance_tick: bool):
     if "multi_live_play" not in st.session_state:
-        st.session_state["multi_live_play"] = True
+        st.session_state["multi_live_play"] = False
         st.session_state["multi_live_min"] = 1
         st.session_state["multi_live_slider"] = 1
         st.session_state["multi_live_interacted"] = True
 
     just_int = bool(st.session_state.pop("multi_live_interacted", False))
     m_cur = int(st.session_state.get("multi_live_min", 1))
-    m_play = bool(st.session_state.get("multi_live_play", True))
+    m_play = bool(st.session_state.get("multi_live_play", False))
 
-    if not just_int and m_play and m_cur < 95:
-        m_cur = min(95, m_cur + 2)
+    if advance_tick and not just_int and m_play and m_cur < 95:
+        m_cur = min(95, m_cur + 3)
         st.session_state["multi_live_min"] = m_cur
         st.session_state["multi_live_slider"] = m_cur
+        if m_cur >= 95:
+            st.session_state["multi_live_play"] = False
     else:
         st.session_state["multi_live_slider"] = m_cur
 
@@ -1609,7 +1831,6 @@ def _multi_match_live_fragment(all_matches_flat: list, picked_labels: list):
     def _reset_m():
         st.session_state["multi_live_min"] = 1
         st.session_state["multi_live_slider"] = 1
-        st.session_state["multi_live_play"] = True
         st.session_state["multi_live_interacted"] = True
 
     mc1, mc2, mc3 = st.columns([1.3, 1.0, 2.7], gap="small")
@@ -1618,25 +1839,28 @@ def _multi_match_live_fragment(all_matches_flat: list, picked_labels: list):
     mc3.slider("⏱️ Đồng hồ chung các sân (Phút):", 1, 95, key="multi_live_slider", on_change=_on_m_scrub)
 
     now_m = int(st.session_state.get("multi_live_min", 1))
+    flat_map = {x[0]: (x[1], x[2]) for x in all_matches_flat}
     grid_cols = st.columns(2, gap="medium")
     for idx_m, p_lbl in enumerate(picked_labels):
-        _, comp_n, m_meta = next(x for x in all_matches_flat if x[0] == p_lbl)
+        if p_lbl not in flat_map:
+            continue
+        comp_n, m_meta = flat_map[p_lbl]
         with grid_cols[idx_m % 2]:
             with st.container(border=True):
                 ht_m = m_meta.get("home_team", "Home")
                 at_m = m_meta.get("away_team", "Away")
                 goals_all = m_meta.get("goals") or []
                 if goals_all:
-                    goals_up_to = [g for g in goals_all if int(g.get("minute", 0) or 0) <= now_m]
+                    goals_up_to = [g for g in goals_all if _safe_minute_int(g.get("minute")) <= now_m]
                     hs_m = sum(1 for g in goals_up_to if g.get("team") == ht_m)
                     as_m = sum(1 for g in goals_up_to if g.get("team") == at_m)
-                    scorers_m = ", ".join(f"{g.get('player')} {g.get('minute')}′" for g in goals_up_to[:5]) or "Đang thi đấu chặt chẽ (0 - 0)"
+                    scorers_m = ", ".join(f"{g.get('player')} {g.get('minute_display') or g.get('minute')}′" for g in goals_up_to[:5]) or "Đang thi đấu chặt chẽ (0 - 0)"
                 else:
                     hs_m = m_meta.get("home_score", 0) if now_m >= 90 else 0
                     as_m = m_meta.get("away_score", 0) if now_m >= 90 else 0
                     scorers_m = f"Tỷ số chung cuộc: {m_meta.get('home_score', 0)} - {m_meta.get('away_score', 0)}"
                 pen_str = f" (Pen {m_meta['pen_home']}-{m_meta['pen_away']})" if (now_m >= 90 and m_meta.get("pen_home") is not None) else ""
-                live_tag = f"🏁 FT" if now_m >= 95 else (f"🔴 LIVE {now_m}′" if is_m_play else f"⏸️ {now_m}′")
+                live_tag = "🏁 FT" if now_m >= 95 else (f"🔴 LIVE {now_m}′" if is_m_play else f"⏸️ {now_m}′")
                 st.markdown(compact_html(f"""
                 <div>
                     <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -1658,44 +1882,199 @@ def _multi_match_live_fragment(all_matches_flat: list, picked_labels: list):
                     st.rerun()
 
 
-def render_live_and_multimatch_workspace(catalog: dict, current_match: dict, match_events: pd.DataFrame, wc2018_events_full: pd.DataFrame, wc2018_shots_df: pd.DataFrame):
-    st.markdown("## 🔴 Trung Tâm Tỷ Số Trực Tiếp Real-Time & Theo Dõi Đa Trận (Live Match Center)")
-    sub_live, sub_multi = st.tabs([
-        "📡 Giả Lập Trực Tiếp Theo Phút (Real-Time Live Score & Commentary)",
-        "📺 Theo Dõi Nhiều Trận Cùng Lúc (Multi-Match Split Screen)",
-    ])
+@st.fragment(run_every="2.0s")
+def _multi_match_live_playing_fragment(all_matches_flat: list, picked_labels: list):
+    _render_multi_match_live_body(all_matches_flat, picked_labels, advance_tick=True)
 
-    with sub_live:
-        max_ev_m = int(max(90, pd.to_numeric(match_events["minute"], errors="coerce").fillna(90).max())) if (not match_events.empty and "minute" in match_events.columns) else 90
-        _live_single_match_player_fragment(current_match, match_events, max_ev_m)
 
-    with sub_multi:
-        st.markdown("#### 📺 Bảng Theo Dõi Nhiều Trận Cùng Lúc (Multi-Match Split Screen — tiêu chí #5)")
-        all_matches_flat = []
-        default_picks = []
-        seen_default_comps = set()
-        for c_name, m_list in catalog.items():
-            for m in m_list:
-                lbl_item = f"[{c_name.split()[1] if len(c_name.split()) > 1 else c_name}] {m['label']}"
-                all_matches_flat.append((lbl_item, c_name, m))
-                if c_name not in seen_default_comps and len(default_picks) < 4:
-                    default_picks.append(lbl_item)
-                    seen_default_comps.add(c_name)
-        if len(default_picks) < 4:
-            for item_x in all_matches_flat:
-                if item_x[0] not in default_picks and len(default_picks) < 4:
-                    default_picks.append(item_x[0])
+@st.fragment
+def _multi_match_live_paused_fragment(all_matches_flat: list, picked_labels: list):
+    _render_multi_match_live_body(all_matches_flat, picked_labels, advance_tick=False)
 
-        picked_labels = st.multiselect(
-            "Chọn từ 2 đến 4 trận đấu để theo dõi song song:",
-            [x[0] for x in all_matches_flat],
-            default=default_picks,
-            max_selections=4,
-        )
-        if not picked_labels:
-            st.info("Hãy chọn ít nhất 1 trận đấu để hiển thị trên màn hình ghép.")
-        else:
-            _multi_match_live_fragment(all_matches_flat, picked_labels)
+
+def _multi_match_live_fragment(all_matches_flat: list, picked_labels: list):
+    if bool(st.session_state.get("multi_live_play", False)) and int(st.session_state.get("multi_live_min", 1)) < 95:
+        _multi_match_live_playing_fragment(all_matches_flat, picked_labels)
+    else:
+        _multi_match_live_paused_fragment(all_matches_flat, picked_labels)
+
+
+def _get_process_ram_mb() -> float:
+    """Đọc RAM thực tế (Working Set MB) của tiến trình máy chủ Python (64-bit safe, không cần thư viện ngoài)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _PMC(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi = ctypes.windll.psapi
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PMC), wintypes.DWORD]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+
+        pmc = _PMC()
+        pmc.cb = ctypes.sizeof(_PMC)
+        if psapi.GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
+            return round(pmc.WorkingSetSize / (1024 * 1024), 1)
+    except Exception:
+        pass
+    return 0.0
+
+
+def render_live_and_multimatch_workspace(
+    catalog: dict,
+    current_match: dict,
+    match_events: pd.DataFrame,
+    wc2018_events_full: pd.DataFrame,
+    wc2018_shots_df: pd.DataFrame,
+    all_selectable_players: list = None,
+    render_stat_bar_fn=None,
+):
+    st.markdown("### 🔴 Trung Tâm Trực Tiếp, So Sánh Cầu Thủ & Quản Lý Máy Chủ")
+    sub_live, sub_multi, sub_cmp, sub_sys = st.tabs(
+        [
+            "📡 Giả Lập Trực Tiếp",
+            "📺 Đa Trận (Split Screen)",
+            "⚔️ So Sánh 2 Cầu Thủ",
+            "☁️ Quản Lý Server & API",
+        ],
+        key="live_ws_tabs_sel",
+        on_change="rerun",
+    )
+
+    if sub_live.open:
+        with sub_live:
+            max_ev_m = int(max(90, pd.to_numeric(match_events["minute"], errors="coerce").fillna(90).max())) if (not match_events.empty and "minute" in match_events.columns) else 90
+            _live_single_match_player_fragment(current_match, match_events, max_ev_m)
+
+    if sub_multi.open:
+        with sub_multi:
+            all_matches_flat = []
+            default_picks = []
+            seen_default_comps = set()
+            for c_name, m_list in catalog.items():
+                for m in m_list:
+                    if m.get("is_upcoming"):
+                        continue
+                    lbl_item = f"[{c_name.split()[1] if len(c_name.split()) > 1 else c_name}] {m['label']}"
+                    all_matches_flat.append((lbl_item, c_name, m))
+                    if c_name not in seen_default_comps and len(default_picks) < 4:
+                        default_picks.append(lbl_item)
+                        seen_default_comps.add(c_name)
+            if len(default_picks) < 4:
+                for item_x in all_matches_flat:
+                    if item_x[0] not in default_picks and len(default_picks) < 4:
+                        default_picks.append(item_x[0])
+
+            picked_labels = st.multiselect(
+                "Chọn từ 2 đến 4 trận đấu để theo dõi song song:",
+                [x[0] for x in all_matches_flat],
+                default=default_picks,
+                max_selections=4,
+            )
+            if not picked_labels:
+                st.info("Hãy chọn ít nhất 1 trận đấu để hiển thị trên màn hình ghép.")
+            else:
+                _multi_match_live_fragment(all_matches_flat, picked_labels)
+
+    if sub_cmp.open:
+        with sub_cmp:
+            players_list = all_selectable_players or []
+            if len(players_list) < 2 or render_stat_bar_fn is None:
+                st.info("Hãy chọn một trận đấu đã diễn ra từ thanh bên trái để so sánh 2 cầu thủ.")
+            else:
+                p_map = {p["name"]: p for p in players_list}
+                names_list = list(p_map.keys())
+                cc1, cc2 = st.columns(2)
+                p1_key = cc1.selectbox("🔵 Cầu thủ 1:", names_list, index=0, format_func=lambda n: f"{p_map[n]['display_name']} ({p_map[n]['team_name']} • {p_map[n]['rating']}★)", key=f"live_cmp_p1_{current_match['id']}")
+                def_i2 = next((i for i, nm in enumerate(names_list) if p_map[nm]["team_name"] != p_map[p1_key]["team_name"]), min(1, len(names_list) - 1))
+                p2_key = cc2.selectbox("🔴 Cầu thủ 2:", names_list, index=def_i2, format_func=lambda n: f"{p_map[n]['display_name']} ({p_map[n]['team_name']} • {p_map[n]['rating']}★)", key=f"live_cmp_p2_{current_match['id']}")
+                p1, p2 = p_map[p1_key], p_map[p2_key]
+                ev1 = match_events[match_events["player_name"] == p1_key] if "player_name" in match_events.columns else pd.DataFrame()
+                ev2 = match_events[match_events["player_name"] == p2_key] if "player_name" in match_events.columns else pd.DataFrame()
+                f1 = lookup_fifa_player(p1["name"], p1["display_name"], p1["team_name"])
+                f2 = lookup_fifa_player(p2["name"], p2["display_name"], p2["team_name"])
+                r1 = compute_player_radar_metrics(p1, ev1, f1)
+                r2 = compute_player_radar_metrics(p2, ev2, f2)
+                axes = r1["axes"] + [r1["axes"][0]]
+                col_rad, col_bars = st.columns([1.05, 1.15], gap="medium")
+                with col_rad:
+                    with st.container(border=True):
+                        fig_cmp = go.Figure()
+                        fig_cmp.add_trace(go.Scatterpolar(r=r1["values"] + [r1["values"][0]], theta=axes, fill="toself", fillcolor="rgba(56,189,248,0.26)", line=dict(color="#38BDF8", width=2.6), name=f"{p1['display_name']}"))
+                        fig_cmp.add_trace(go.Scatterpolar(r=r2["values"] + [r2["values"][0]], theta=axes, fill="toself", fillcolor="rgba(255,77,109,0.24)", line=dict(color="#FF4D6D", width=2.6), name=f"{p2['display_name']}"))
+                        fig_cmp.update_layout(polar=dict(bgcolor="#0D121C", radialaxis=dict(visible=True, range=[0, 100], gridcolor="rgba(148,163,184,0.16)"), angularaxis=dict(tickfont=dict(size=11.5, color="#F8FAFC"))), height=350, margin=dict(l=35, r=35, t=28, b=15), paper_bgcolor="#131A26", font=dict(color="#E2E8F0"), legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"))
+                        st.plotly_chart(fig_cmp, width="stretch", key=f"live_dual_rad_{p1_key}_{p2_key}")
+                with col_bars:
+                    with st.container(border=True):
+                        b_html = ""
+                        b_html += render_stat_bar_fn("Điểm Đánh Giá (Rating)", p1["rating"], p2["rating"], f"{p1['rating']}★", f"{p2['rating']}★")
+                        b_html += render_stat_bar_fn("Bàn thắng", p1.get("goals_count", 0), p2.get("goals_count", 0), str(p1.get("goals_count", 0)), str(p2.get("goals_count", 0)))
+                        b_html += render_stat_bar_fn("Kiến tạo", p1.get("assists_count", 0), p2.get("assists_count", 0), str(p1.get("assists_count", 0)), str(p2.get("assists_count", 0)))
+                        p1_c = int(str(p1.get("passes", "0/0")).split("/")[0])
+                        p2_c = int(str(p2.get("passes", "0/0")).split("/")[0])
+                        b_html += render_stat_bar_fn("Chuyền chính xác", p1_c, p2_c, str(p1.get("passes")), str(p2.get("passes")))
+                        b_html += render_stat_bar_fn("Tắc bóng & Phòng ngự", p1.get("tackles", 0), p2.get("tackles", 0), str(p1.get("tackles", 0)), str(p2.get("tackles", 0)))
+                        if f1 and f2:
+                            b_html += render_stat_bar_fn("Định giá FIFA", f1.get("Value_M", 1), f2.get("Value_M", 1), str(f1.get("Value", "N/A")), str(f2.get("Value", "N/A")))
+                        st.markdown(b_html, unsafe_allow_html=True)
+
+    if sub_sys.open:
+        with sub_sys:
+            api_ok = ensure_api_server_running(8502)
+            ram_mb = _get_process_ram_mb()
+            status_json_path = os.path.join(BASE_DIR, "server_status.json")
+            tunnel_url = ""
+            if os.path.isfile(status_json_path):
+                try:
+                    with open(status_json_path, "r", encoding="utf-8") as _sf:
+                        tunnel_url = str(json.load(_sf).get("public_url") or "")
+                except Exception:
+                    tunnel_url = ""
+
+            s1, s2, s3, s4 = st.columns(4, gap="small")
+            s1.metric("🖥️ RAM Máy Chủ", f"{ram_mb:.0f} MB" if ram_mb > 0 else "Optimal", "Zero-Copy Cache", border=True)
+            s2.metric("🗄️ SQLite3 WAL", "Concurrent OK", "Đa người dùng", border=True)
+            s3.metric("🌐 REST JSON API", "ONLINE :8502" if api_ok else "OFFLINE", "Gzip · TTL Cache", border=True)
+            s4.metric("📦 Kho Big Data", "7,120+ Trận", "ZSTD · Gzip", border=True)
+
+            if tunnel_url:
+                st.success(f"🌍 Đường hầm công khai đang hoạt động: **{tunnel_url}**")
+
+            with st.container(border=True):
+                st.markdown("##### 🔌 Kiểm Thử Trực Tiếp REST API (`http://localhost:8502/api/...`)")
+                ep = st.selectbox(
+                    "Endpoint:",
+                    [
+                        "http://localhost:8502/api/health",
+                        "http://localhost:8502/api/upcoming?league=ENG&limit=10",
+                        "http://localhost:8502/api/xpts?league=ENG&season=2026-2027",
+                        "http://localhost:8502/api/standings",
+                        "http://localhost:8502/api/players/top?limit=10",
+                        "http://localhost:8502/api/predict?home=France&away=Croatia",
+                        "http://localhost:8502/api/matches?limit=10&competition=UCL",
+                    ],
+                    key="live_api_ep_sel",
+                )
+                if st.button("🚀 Gửi GET Request", width="stretch", key="live_api_send_btn"):
+                    try:
+                        with urllib.request.urlopen(ep, timeout=3) as resp:
+                            st.code(resp.read().decode("utf-8")[:3200], language="json")
+                    except Exception as exc:
+                        st.warning(f"Lỗi kết nối API: {exc}")
 
 
 # ==========================================================
@@ -1921,19 +2300,57 @@ def _compute_standings_from_catalog_matches(matches_list: list, mode: str = "gro
     return result
 
 
-def render_tournament_hub_workspace(catalog: dict, wc2018_events_full: pd.DataFrame, wc2018_shots_df: pd.DataFrame, player_display_fn):
+def render_tournament_hub_workspace(catalog: dict, wc2018_events_full, wc2018_shots_df: pd.DataFrame, player_display_fn):
     st.markdown("## 🏆 Trung Tâm Giải Đấu: Bảng Xếp Hạng, Lịch Thi Đấu, Thống Kê Toàn Mùa & Chuyển Nhượng")
-    matches_meta, leaderboard = compute_wc2018_season_leaderboards(wc2018_events_full, wc2018_shots_df)
 
-    t_stand, t_fix, t_season, t_trans = st.tabs([
-        "📊 Bảng Xếp Hạng (Đa Giải Đấu)",
-        "📅 Lịch Thi Đấu & Kết Quả (Fixtures)",
-        "🏅 Thống Kê Cầu Thủ Toàn Giải (Season Stats)",
-        "💶 Thị Trường Chuyển Nhượng (FIFA Transfers)",
-    ])
+    def _get_wc2018_leaderboards():
+        ev_full = wc2018_events_full() if callable(wc2018_events_full) else wc2018_events_full
+        return compute_wc2018_season_leaderboards(ev_full, wc2018_shots_df)
+
+    t_stand, t_fix, t_season, t_trans = st.tabs(
+        [
+            "📊 Bảng Xếp Hạng (Đa Giải Đấu)",
+            "📅 Lịch Thi Đấu & Kết Quả (Fixtures)",
+            "🏅 Thống Kê Cầu Thủ Toàn Giải (Season Stats)",
+            "💶 Thị Trường Chuyển Nhượng (FIFA Transfers)",
+        ],
+        key="hub_tabs_sel",
+        on_change="rerun",
+    )
 
     with t_stand:
+        if not t_stand.open:
+            pass
+        else:
+            _render_hub_standings_tab(catalog, _get_wc2018_leaderboards)
+
+    with t_fix:
+        if t_fix.open:
+            _render_hub_fixtures_tab(catalog)
+
+    with t_season:
+        if t_season.open:
+            _render_hub_season_stats_tab(_get_wc2018_leaderboards, player_display_fn)
+
+    with t_trans:
+        if t_trans.open:
+            _render_hub_transfers_tab()
+
+
+def _render_hub_standings_tab(catalog: dict, get_wc2018_lb_fn):
+        from prematch_research import compute_league_xpts_standings
+
         tourn_options = [
+            "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League 2026/27 (Live • BXH + xPTS)",
+            "🇪🇸 La Liga 2026/27 (Live • BXH + xPTS)",
+            "🇮🇹 Serie A 2026/27 (Live • BXH + xPTS)",
+            "🇩🇪 Bundesliga 2026/27 (Live • BXH + xPTS)",
+            "🇫🇷 Ligue 1 2026/27 (Live • BXH + xPTS)",
+            "⚽ UEFA Champions League 2026/27 (League Phase + xPTS)",
+            "🏆 UEFA Europa League 2026/27 (League Phase + xPTS)",
+            "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League 2025/26 (Trọn mùa • 380 trận + xPTS)",
+            "🇪🇸 La Liga 2025/26 (Trọn mùa • 380 trận + xPTS)",
+            "🏆 FIFA World Cup 2026 (Vòng Bảng • 104 trận)",
             "🏆 FIFA World Cup 2022 (Bảng A–H • 64/64 trận)",
             "⚽ UEFA Champions League 2025/26 (League Phase • 36 CLB)",
             "⚽ UEFA Champions League 2024/25 (League Phase • 36 CLB)",
@@ -1945,47 +2362,115 @@ def render_tournament_hub_workspace(catalog: dict, wc2018_events_full: pd.DataFr
         ]
         sel_tourn = st.selectbox("🏆 Chọn Giải Đấu & Mùa Giải xem Bảng Xếp Hạng:", tourn_options, index=0, key="hub_standings_tourn")
 
-        is_ucl_swiss = False
-        header_prefix = "🏆 FIFA WORLD CUP 2022"
-        if "World Cup 2018" in sel_tourn:
-            standings = compute_wc2018_standings_data(matches_meta)
-            header_prefix = "🏆 FIFA WORLD CUP 2018"
-        elif "World Cup 2022" in sel_tourn:
-            wc22_grp = [m for m in catalog.get("🏆 FIFA World Cup", []) if "World Cup 2022" in str(m.get("stage", "")) and "Vòng Bảng" in str(m.get("stage", ""))]
-            standings = _compute_standings_from_catalog_matches(wc22_grp, mode="groups")
-            header_prefix = "🏆 FIFA WORLD CUP 2022"
-        elif "Champions League 2025/26" in sel_tourn:
-            ucl25_lp = [m for m in catalog.get("⚽ UEFA Champions League", []) if "2025/2026" in str(m.get("stage", "")) and "League Phase" in str(m.get("stage", ""))]
-            standings = _compute_standings_from_catalog_matches(ucl25_lp, mode="ucl_league")
-            header_prefix = "⚽ UEFA CHAMPIONS LEAGUE 2025/26"
-            is_ucl_swiss = True
-        elif "Champions League 2024/25" in sel_tourn:
-            ucl24_lp = [m for m in catalog.get("⚽ UEFA Champions League", []) if "2024/2025" in str(m.get("stage", "")) and "League Phase" in str(m.get("stage", ""))]
-            standings = _compute_standings_from_catalog_matches(ucl24_lp, mode="ucl_league")
-            header_prefix = "⚽ UEFA CHAMPIONS LEAGUE 2024/25"
-            is_ucl_swiss = True
-        elif "Euro 2024" in sel_tourn:
-            eu24_grp = [m for m in catalog.get("🏆 UEFA European Championship", []) if "Euro 2024" in str(m.get("stage", "")) and "Vòng Bảng" in str(m.get("stage", ""))]
-            standings = _compute_standings_from_catalog_matches(eu24_grp, mode="groups")
-            header_prefix = "🏆 UEFA EURO 2024"
-        elif "Euro 2020" in sel_tourn:
-            eu20_grp = [m for m in catalog.get("🏆 UEFA European Championship", []) if "Euro 2020" in str(m.get("stage", "")) and "Vòng Bảng" in str(m.get("stage", ""))]
-            standings = _compute_standings_from_catalog_matches(eu20_grp, mode="groups")
-            header_prefix = "🏆 UEFA EURO 2020"
-        elif "Copa América 2024" in sel_tourn:
-            ca_seeds = {"Argentina": "A", "Venezuela": "B", "Uruguay": "C", "Colombia": "D"}
-            ca_grp = [m for m in catalog.get("🏆 CONMEBOL Copa América", []) if "Vòng Bảng" in str(m.get("stage", ""))]
-            standings = _compute_standings_from_catalog_matches(ca_grp, mode="groups", seed_groups=ca_seeds)
-            header_prefix = "🏆 COPA AMÉRICA 2024"
-        else:
-            af_seeds = {"Ivory Coast": "A", "Côte d'Ivoire": "A", "Egypt": "B", "Cape Verde Islands": "B", "Senegal": "C", "Algeria": "D", "Angola": "D", "Mali": "E", "Tunisia": "E", "Morocco": "F"}
-            af_grp = [m for m in catalog.get("🌍 Africa Cup of Nations (AFCON)", []) if "Vòng Bảng" in str(m.get("stage", ""))]
-            standings = _compute_standings_from_catalog_matches(af_grp, mode="groups", seed_groups=af_seeds)
-            header_prefix = "🌍 AFCON 2023"
+        xpts_league_map = {
+            "Premier League 2026/27": ("ENG", "2026-2027", "🏴󠁧󠁢󠁥󠁮󠁧󠁿 ENGLISH PREMIER LEAGUE 2026/27"),
+            "La Liga 2026/27": ("ESP", "2026-2027", "🇪🇸 SPANISH LA LIGA 2026/27"),
+            "Serie A 2026/27": ("ITA", "2026-2027", "🇮🇹 ITALIAN SERIE A 2026/27"),
+            "Bundesliga 2026/27": ("GER", "2026-2027", "🇩🇪 GERMAN BUNDESLIGA 2026/27"),
+            "Ligue 1 2026/27": ("FRA", "2026-2027", "🇫🇷 FRENCH LIGUE 1 2026/27"),
+            "Champions League 2026/27": ("UCL", "2026-2027", "⚽ UEFA CHAMPIONS LEAGUE 2026/27"),
+            "Europa League 2026/27": ("UEL", "2026-2027", "🏆 UEFA EUROPA LEAGUE 2026/27"),
+            "Premier League 2025/26": ("ENG", "2025-2026", "🏴󠁧󠁢󠁥󠁮󠁧󠁿 ENGLISH PREMIER LEAGUE 2025/26"),
+            "La Liga 2025/26": ("ESP", "2025-2026", "🇪🇸 SPANISH LA LIGA 2025/26"),
+        }
+        matched_xpts = next((v for k, v in xpts_league_map.items() if k in sel_tourn), None)
 
-        if not standings:
+        if matched_xpts:
+            lg_code, season_str, hdr_t = matched_xpts
+            xdf = compute_league_xpts_standings(lg_code, season_str)
+            if xdf.empty:
+                st.info("Chưa có dữ liệu BXH cho giải đấu này.")
+            else:
+                st.caption("🟢 Top 4 / Top 8: Dự Champions League / Vòng 1/8 &nbsp;•&nbsp; Cột **xPTS** = Điểm kỳ vọng tính từ chất lượng cơ hội xG chuẩn Understat/FotMob.")
+                trs_x = ""
+                for _, rx in xdf.iterrows():
+                    rk = int(rx["rank"])
+                    q_bg = "rgba(0, 214, 108, 0.09)" if rk <= (8 if lg_code in ("UCL", "UEL") else 4) else ("rgba(239, 68, 68, 0.07)" if rk >= len(xdf) - 2 and lg_code not in ("UCL", "UEL") else "transparent")
+                    q_dot = "🟢" if rk <= (8 if lg_code in ("UCL", "UEL") else 4) else ("🔴" if rk >= len(xdf) - 2 and lg_code not in ("UCL", "UEL") else "⚪")
+                    luck_c = "#00E676" if rx["luck_pts"] >= 2.0 else ("#F87171" if rx["luck_pts"] <= -2.0 else "#94A3B8")
+                    fb = "".join(
+                        f'<span style="background:{"#00D66C" if f=="W" else ("#FACC15" if f=="D" else "#EF4444")};color:#000;font-weight:900;font-size:10px;padding:1px 5px;border-radius:4px;margin-left:2px;">{f}</span>'
+                        for f in rx["form_5"]
+                    )
+                    trs_x += compact_html(f"""
+                    <tr style="background:{q_bg};border-bottom:1px solid #1E293B;">
+                        <td style="padding:7px 8px;font-weight:800;">{q_dot} {rk}</td>
+                        <td style="padding:7px 8px;font-weight:800;color:#F8FAFC;">{html.escape(str(rx['team']))}</td>
+                        <td style="padding:7px 5px;text-align:center;">{int(rx['mp'])}</td>
+                        <td style="padding:7px 5px;text-align:center;">{int(rx['w'])}-{int(rx['d'])}-{int(rx['l'])}</td>
+                        <td style="padding:7px 5px;text-align:center;">{int(rx['gf'])}:{int(rx['ga'])}</td>
+                        <td style="padding:7px 5px;text-align:center;color:{'#4ADE80' if rx['gd']>=0 else '#F87171'};font-weight:700;">{int(rx['gd']):+d}</td>
+                        <td style="padding:7px 8px;text-align:center;font-weight:900;color:#38BDF8;font-size:14.5px;">{int(rx['pts'])}</td>
+                        <td style="padding:7px 5px;text-align:center;color:#7DD3FC;">{rx['xg']:.1f}</td>
+                        <td style="padding:7px 5px;text-align:center;color:#FDA4AF;">{rx['xga']:.1f}</td>
+                        <td style="padding:7px 6px;text-align:center;font-weight:900;color:#FACC15;">{rx['xpts']:.1f}</td>
+                        <td style="padding:7px 6px;text-align:center;font-weight:800;color:{luck_c};">{rx['luck_pts']:+.1f}</td>
+                        <td style="padding:7px 6px;text-align:right;">{fb}</td>
+                    </tr>
+                    """)
+                st.markdown(compact_html(f"""
+                <div style="background:#131A26;border:1px solid #26354D;border-radius:13px;padding:14px 16px;margin-bottom:12px;overflow-x:auto;">
+                    <div style="color:#38BDF8;font-weight:900;font-size:15px;margin-bottom:10px;">{hdr_t} • BẢNG XẾP HẠNG THỰC TẾ & ĐIỂM KỲ VỌNG (xPTS)</div>
+                    <table style="width:100%;border-collapse:collapse;font-size:12.8px;color:#CBD5E1;">
+                        <thead><tr style="border-bottom:1.5px solid #334155;color:#94A3B8;font-size:11.5px;">
+                            <th style="text-align:left;padding:6px 8px;">Hạng</th>
+                            <th style="text-align:left;padding:6px 8px;">Câu lạc bộ</th>
+                            <th>Tr</th><th>T-H-B</th><th>BT:BB</th><th>HS</th><th>Điểm</th><th>xG</th><th>xGA</th><th>xPTS</th><th>Pts−xPTS</th>
+                            <th style="text-align:right;">5 trận gần nhất</th>
+                        </tr></thead>
+                        <tbody>{trs_x}</tbody>
+                    </table>
+                </div>
+                """), unsafe_allow_html=True)
+            standings = None
+            is_ucl_swiss = False
+        else:
+            is_ucl_swiss = False
+            header_prefix = "🏆 FIFA WORLD CUP 2022"
+            if "World Cup 2018" in sel_tourn:
+                matches_meta, _ = get_wc2018_lb_fn()
+                standings = compute_wc2018_standings_data(matches_meta)
+                header_prefix = "🏆 FIFA WORLD CUP 2018"
+            elif "World Cup 2026" in sel_tourn:
+                wc26_grp = [m for m in catalog.get("🏆 FIFA World Cup", []) if "World Cup 2026" in str(m.get("stage", "")) and "Vòng Bảng" in str(m.get("stage", ""))]
+                standings = _compute_standings_from_catalog_matches(wc26_grp, mode="groups")
+                header_prefix = "🏆 FIFA WORLD CUP 2026"
+            elif "World Cup 2022" in sel_tourn:
+                wc22_grp = [m for m in catalog.get("🏆 FIFA World Cup", []) if "World Cup 2022" in str(m.get("stage", "")) and "Vòng Bảng" in str(m.get("stage", ""))]
+                standings = _compute_standings_from_catalog_matches(wc22_grp, mode="groups")
+                header_prefix = "🏆 FIFA WORLD CUP 2022"
+            elif "Champions League 2025/26" in sel_tourn:
+                ucl25_lp = [m for m in catalog.get("⚽ UEFA Champions League", []) if "2025/2026" in str(m.get("stage", "")) and "League Phase" in str(m.get("stage", ""))]
+                standings = _compute_standings_from_catalog_matches(ucl25_lp, mode="ucl_league")
+                header_prefix = "⚽ UEFA CHAMPIONS LEAGUE 2025/26"
+                is_ucl_swiss = True
+            elif "Champions League 2024/25" in sel_tourn:
+                ucl24_lp = [m for m in catalog.get("⚽ UEFA Champions League", []) if "2024/2025" in str(m.get("stage", "")) and "League Phase" in str(m.get("stage", ""))]
+                standings = _compute_standings_from_catalog_matches(ucl24_lp, mode="ucl_league")
+                header_prefix = "⚽ UEFA CHAMPIONS LEAGUE 2024/25"
+                is_ucl_swiss = True
+            elif "Euro 2024" in sel_tourn:
+                eu24_grp = [m for m in catalog.get("🏆 UEFA European Championship", []) if "Euro 2024" in str(m.get("stage", "")) and "Vòng Bảng" in str(m.get("stage", ""))]
+                standings = _compute_standings_from_catalog_matches(eu24_grp, mode="groups")
+                header_prefix = "🏆 UEFA EURO 2024"
+            elif "Euro 2020" in sel_tourn:
+                eu20_grp = [m for m in catalog.get("🏆 UEFA European Championship", []) if "Euro 2020" in str(m.get("stage", "")) and "Vòng Bảng" in str(m.get("stage", ""))]
+                standings = _compute_standings_from_catalog_matches(eu20_grp, mode="groups")
+                header_prefix = "🏆 UEFA EURO 2020"
+            elif "Copa América 2024" in sel_tourn:
+                ca_seeds = {"Argentina": "A", "Venezuela": "B", "Uruguay": "C", "Colombia": "D"}
+                ca_grp = [m for m in catalog.get("🏆 CONMEBOL Copa América", []) if "Vòng Bảng" in str(m.get("stage", ""))]
+                standings = _compute_standings_from_catalog_matches(ca_grp, mode="groups", seed_groups=ca_seeds)
+                header_prefix = "🏆 COPA AMÉRICA 2024"
+            else:
+                af_seeds = {"Ivory Coast": "A", "Côte d'Ivoire": "A", "Egypt": "B", "Cape Verde Islands": "B", "Senegal": "C", "Algeria": "D", "Angola": "D", "Mali": "E", "Tunisia": "E", "Morocco": "F"}
+                af_grp = [m for m in catalog.get("🌍 Africa Cup of Nations (AFCON)", []) if "Vòng Bảng" in str(m.get("stage", ""))]
+                standings = _compute_standings_from_catalog_matches(af_grp, mode="groups", seed_groups=af_seeds)
+                header_prefix = "🌍 AFCON 2023"
+
+        if not matched_xpts and not standings:
             st.info("Chưa tìm thấy dữ liệu vòng bảng cho giải đấu này.")
-        elif is_ucl_swiss:
+        elif not matched_xpts and is_ucl_swiss:
             st.caption("🟢 Hạng 1–8: Vào thẳng Vòng 1/8 (R16) &nbsp;•&nbsp; 🟡 Hạng 9–24: Đá Play-off Knockout &nbsp;•&nbsp; ⚪ Hạng 25–36: Bị loại.")
             rows_u = list(standings.values())[0]
             trs_u = ""
@@ -2027,7 +2512,7 @@ def render_tournament_hub_workspace(catalog: dict, wc2018_events_full: pd.DataFr
                 </table>
             </div>
             """), unsafe_allow_html=True)
-        else:
+        elif not matched_xpts and standings:
             st.caption("🟢 Top 2 đội đầu mỗi bảng giành quyền vào Vòng Knockout.")
             g_names = sorted(standings.keys())
             for row_idx in range(0, len(g_names), 2):
@@ -2074,37 +2559,84 @@ def render_tournament_hub_workspace(catalog: dict, wc2018_events_full: pd.DataFr
                         </div>
                         """), unsafe_allow_html=True)
 
-    with t_fix:
-        fc1, fc2, fc3 = st.columns([1.4, 1.4, 1.8])
+def _render_hub_fixtures_tab(catalog: dict):
+        fc0, fc1, fc2, fc3 = st.columns([1.25, 1.35, 1.25, 1.4])
+        fix_status_mode = fc0.radio(
+            "Trạng thái:",
+            ["⏰ Sắp diễn ra", "✅ Đã kết thúc", "📚 Tất cả"],
+            horizontal=False,
+            key="fix_status_mode",
+        )
         comp_pick = fc1.selectbox("Giải đấu:", [k for k in catalog.keys() if catalog[k]], key="fix_comp_sel")
         fixtures_list = catalog[comp_pick]
+        if fix_status_mode == "⏰ Sắp diễn ra":
+            fixtures_list = [m for m in fixtures_list if m.get("is_upcoming")]
+            fixtures_list = sorted(fixtures_list, key=lambda m: str(m.get("date") or "9999-99-99"))
+        elif fix_status_mode == "✅ Đã kết thúc":
+            fixtures_list = [m for m in fixtures_list if not m.get("is_upcoming")]
+
         stages_avail = ["Tất cả vòng đấu"] + sorted(list({str(m.get("stage", "")) for m in fixtures_list}))
         stage_pick = fc2.selectbox("Lọc theo Vòng đấu:", stages_avail, key="fix_stage_sel")
-        team_q = fc3.text_input("Lọc nhanh theo tên đội:", placeholder="VD: France, Argentina, Brazil...", key="fix_team_q")
+        team_q = fc3.text_input("Lọc nhanh theo tên đội:", placeholder="VD: Arsenal, Real Madrid, Bayern...", key="fix_team_q")
 
         filtered_fix = [
             m for m in fixtures_list
             if (stage_pick == "Tất cả vòng đấu" or str(m.get("stage", "")) == stage_pick)
             and (not team_q.strip() or team_q.strip().lower() in f"{m.get('home_team', '')} {m.get('away_team', '')} {m.get('label', '')}".lower())
         ]
-        st.caption(f"Hiển thị **{len(filtered_fix)}** trận đấu. Bấm **Phân tích** để nhảy thẳng sang màn hình mổ xẻ chiến thuật.")
-        for idx_f, mf in enumerate(filtered_fix[:32]):
-            col_info, col_btn = st.columns([4.4, 1.1], gap="small")
-            pen_t = f" • PEN {mf['pen_home']}-{mf['pen_away']}" if mf.get("pen_home") is not None else ""
-            col_info.markdown(compact_html(f"""
-            <div style="display:flex;justify-content:space-between;align-items:center;background:#131A26;border:1px solid #243247;border-radius:10px;padding:9px 14px;">
-                <span style="color:#94A3B8;font-size:12px;min-width:190px;">📅 {html.escape(str(mf.get('date') or 'N/A'))} • {html.escape(str(mf.get('stage', '')))}</span>
-                <span style="color:#F8FAFC;font-weight:800;font-size:14px;">🔵 {html.escape(str(mf.get('home_team', '')))} &nbsp; <b style="color:#00E676;font-size:16px;">{mf.get('home_score', 0)} - {mf.get('away_score', 0)}</b><span style="color:#FACC15;font-size:11.5px;">{html.escape(pen_t)}</span> &nbsp; {html.escape(str(mf.get('away_team', '')))} 🔴</span>
-                <span style="color:#64748B;font-size:11.5px;">🏟️ {html.escape(str(mf.get('stadium', '')))}</span>
-            </div>
-            """), unsafe_allow_html=True)
-            if col_btn.button("📊 Phân tích", key=f"fix_open_{mf['id']}_{idx_f}", width="stretch"):
-                st.session_state["jump_comp"] = comp_pick
-                st.session_state["jump_match_label"] = mf["label"]
-                st.session_state["pending_workspace"] = "ws_match"
-                st.rerun()
+        st.caption(f"Hiển thị **{len(filtered_fix)}** trận đấu. Trận chưa đá có sẵn tỷ lệ AI & nút **🔮 Nghiên cứu & Dự đoán**.")
+        if not filtered_fix:
+            st.info("Giải đấu này hiện chưa có lịch đấu ở mục lọc này. Hãy chuyển sang giải **Premier League / La Liga / Serie A / Bundesliga / Ligue 1 / UCL / UEL** hoặc đổi bộ lọc trạng thái!")
+        for idx_f, mf in enumerate(filtered_fix[:36]):
+            col_info, col_btn = st.columns([4.2, 1.3], gap="small")
+            ht_f = str(mf.get("home_team", ""))
+            at_f = str(mf.get("away_team", ""))
+            h_lg_u = get_team_logo_url(ht_f)
+            a_lg_u = get_team_logo_url(at_f)
+            h_img_h = f'<img src="{html.escape(h_lg_u, quote=True)}" width="22" height="22" style="width:22px;height:22px;object-fit:contain;flex:none;" onerror="this.style.display=\'none\'">' if h_lg_u else '<span style="color:#38BDF8;font-size:10px;">●</span>'
+            a_img_h = f'<img src="{html.escape(a_lg_u, quote=True)}" width="22" height="22" style="width:22px;height:22px;object-fit:contain;flex:none;" onerror="this.style.display=\'none\'">' if a_lg_u else '<span style="color:#FF4D6D;font-size:10px;">●</span>'
+            if mf.get("is_upcoming"):
+                pH = mf.get("prob_H", 34)
+                pD = mf.get("prob_D", 28)
+                pA = mf.get("prob_A", 38)
+                lh = mf.get("pred_home_goals", 1.3)
+                la = mf.get("pred_away_goals", 1.1)
+                col_info.markdown(compact_html(f"""
+                <div style="display:grid;grid-template-columns:168px minmax(0,1fr) 204px;align-items:center;gap:10px;background:linear-gradient(90deg,#131A26,#17243A);border:1px solid #2A4365;border-left:3.5px solid #FACC15;border-radius:10px;padding:9px 14px;">
+                    <span style="color:#FDE047;font-size:12px;font-weight:800;white-space:nowrap;">⏰ {html.escape(str(mf.get('date') or 'N/A'))} • Sắp đá</span>
+                    <div style="display:grid;grid-template-columns:minmax(0,1fr) 50px minmax(0,1fr);align-items:center;gap:8px;min-width:0;">
+                        <span style="display:flex;align-items:center;justify-content:flex-end;gap:6px;color:#F8FAFC;font-weight:900;font-size:13.5px;min-width:0;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;">{html.escape(ht_f)}</span>{h_img_h}</span>
+                        <span style="display:inline-flex;align-items:center;justify-content:center;color:#38BDF8;font-weight:900;font-size:11.5px;background:#090D16;border:1px solid rgba(56,189,248,0.28);border-radius:6px;padding:2px 6px;letter-spacing:0.06em;">VS</span>
+                        <span style="display:flex;align-items:center;justify-content:flex-start;gap:6px;color:#F8FAFC;font-weight:900;font-size:13.5px;min-width:0;">{a_img_h}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;">{html.escape(at_f)}</span></span>
+                    </div>
+                    <span style="color:#7DD3FC;font-size:11.5px;font-weight:700;text-align:right;white-space:nowrap;">🤖 AI: {pH:.0f}% / {pD:.0f}% / {pA:.0f}% · xG {lh:.2f}-{la:.2f}</span>
+                </div>
+                """), unsafe_allow_html=True)
+                if col_btn.button("🔮 Nghiên cứu & Dự đoán", key=f"fix_up_{mf['id']}_{idx_f}", width="stretch"):
+                    st.session_state["jump_upcoming_match_id"] = str(mf.get("upcoming_match_id") or "")
+                    st.session_state["pending_workspace"] = "ws_prematch"
+                    st.rerun()
+            else:
+                pen_t = f" • PEN {mf['pen_home']}-{mf['pen_away']}" if mf.get("pen_home") is not None else ""
+                col_info.markdown(compact_html(f"""
+                <div style="display:grid;grid-template-columns:188px minmax(0,1fr) 170px;align-items:center;gap:10px;background:#131A26;border:1px solid #243247;border-radius:10px;padding:9px 14px;">
+                    <span style="color:#94A3B8;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📅 {html.escape(str(mf.get('date') or 'N/A'))} • {html.escape(str(mf.get('stage', '')))}</span>
+                    <div style="display:grid;grid-template-columns:minmax(0,1fr) 64px minmax(0,1fr);align-items:center;gap:8px;min-width:0;">
+                        <span style="display:flex;align-items:center;justify-content:flex-end;gap:6px;color:#F8FAFC;font-weight:800;font-size:13.5px;min-width:0;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;">{html.escape(ht_f)}</span>{h_img_h}</span>
+                        <span style="text-align:center;color:#00E676;font-size:15.5px;font-weight:900;white-space:nowrap;">{mf.get('home_score', 0)} - {mf.get('away_score', 0)}<span style="color:#FACC15;font-size:10.5px;">{html.escape(pen_t)}</span></span>
+                        <span style="display:flex;align-items:center;justify-content:flex-start;gap:6px;color:#F8FAFC;font-weight:800;font-size:13.5px;min-width:0;">{a_img_h}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;">{html.escape(at_f)}</span></span>
+                    </div>
+                    <span style="color:#64748B;font-size:11.5px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🏟️ {html.escape(str(mf.get('stadium', '')))}</span>
+                </div>
+                """), unsafe_allow_html=True)
+                if col_btn.button("📊 Phân tích", key=f"fix_open_{mf['id']}_{idx_f}", width="stretch"):
+                    st.session_state["jump_comp"] = comp_pick
+                    st.session_state["jump_match_label"] = mf["label"]
+                    st.session_state["pending_workspace"] = "ws_match"
+                    st.rerun()
 
-    with t_season:
+def _render_hub_season_stats_tab(get_wc2018_lb_fn, player_display_fn):
+        _, leaderboard = get_wc2018_lb_fn()
         if leaderboard.empty:
             st.info("Chưa có dữ liệu tổng hợp toàn mùa.")
         else:
@@ -2127,7 +2659,7 @@ def render_tournament_hub_workspace(catalog: dict, wc2018_events_full: pd.DataFr
                 "👟 Kiến tạo (Assists)": "assists",
                 "🔑 Tạo cơ hội (Key Passes)": "key_passes",
                 "🚀 Độ đe dọa từ chuyền (xT)": "xt",
-                "⭐ Điểm SofaScore trung bình": "avg_rating",
+                "⭐ Điểm đánh giá trung bình": "avg_rating",
             }
             sc1, sc2 = st.columns([2, 2])
             chosen_metric_lbl = sc1.selectbox("Xếp hạng theo chỉ số:", list(sort_col_map.keys()))
@@ -2143,7 +2675,7 @@ def render_tournament_hub_workspace(catalog: dict, wc2018_events_full: pd.DataFr
             })
             st.dataframe(disp_df, width="stretch", hide_index=True)
 
-    with t_trans:
+def _render_hub_transfers_tab():
         fifa_df, _, _ = load_fifa_transfer_db()
         if fifa_df.empty:
             st.info("Không tìm thấy tệp dữ liệu FIFA Transfer.")
@@ -2255,7 +2787,7 @@ def render_compare_ai_and_architecture_workspace(
                 with st.container(border=True):
                     st.markdown("##### 📊 Đối Chiếu Trực Diện Các Chỉ Số")
                     b_html = ""
-                    b_html += render_stat_bar_fn("Điểm SofaScore", p1["rating"], p2["rating"], f"{p1['rating']}★", f"{p2['rating']}★")
+                    b_html += render_stat_bar_fn("Điểm Đánh Giá (Rating)", p1["rating"], p2["rating"], f"{p1['rating']}★", f"{p2['rating']}★")
                     b_html += render_stat_bar_fn("Bàn thắng", p1.get("goals_count", 0), p2.get("goals_count", 0), str(p1.get("goals_count", 0)), str(p2.get("goals_count", 0)))
                     b_html += render_stat_bar_fn("Kiến tạo", p1.get("assists_count", 0), p2.get("assists_count", 0), str(p1.get("assists_count", 0)), str(p2.get("assists_count", 0)))
                     p1_comp = int(str(p1.get("passes", "0/0")).split("/")[0])
@@ -2267,28 +2799,56 @@ def render_compare_ai_and_architecture_workspace(
                     st.markdown(b_html, unsafe_allow_html=True)
 
     with tab_aipred:
-        st.markdown("#### 🤖 Mô Hình AI Bivariate Poisson Dự Đoán Tỷ Số & Ma Trận Xác Suất 6×6")
-        teams_pool = sorted(match_stats_df["team_name"].dropna().unique().tolist()) if (match_stats_df is not None and not match_stats_df.empty and "team_name" in match_stats_df.columns) else ["France", "Croatia", "Brazil", "Belgium", "Argentina", "Spain", "England", "Portugal"]
+        from prematch_research import dixon_coles_matrix, extract_team_recent_form, load_historical_xg_df
+
+        st.markdown("#### 🤖 Mô Hình AI Dixon-Coles Poisson Dự Đoán Cặp Đấu Bất Kỳ (250+ CLB Châu Âu & ĐTQG)")
+        hist_xg_df = load_historical_xg_df()
+        modern_teams = []
+        if not hist_xg_df.empty:
+            rec_s = hist_xg_df[hist_xg_df["season"].isin(["2026-2027", "2025-2026"])]
+            modern_teams = sorted(set(rec_s["home_team"].dropna().astype(str)) | set(rec_s["away_team"].dropna().astype(str)))
+        wc_teams = sorted(match_stats_df["team_name"].dropna().unique().tolist()) if (match_stats_df is not None and not match_stats_df.empty and "team_name" in match_stats_df.columns) else []
+        teams_pool = sorted(set(modern_teams) | set(wc_teams)) or ["Manchester City", "Arsenal", "Real Madrid", "Barcelona", "Bayern Munich", "Liverpool", "PSG", "Inter Milan"]
+
         ac1, ac2 = st.columns(2)
-        h_idx = teams_pool.index("France") if "France" in teams_pool else 0
-        a_idx = teams_pool.index("Croatia") if "Croatia" in teams_pool else min(1, len(teams_pool) - 1)
+        h_idx = teams_pool.index("Manchester City") if "Manchester City" in teams_pool else (teams_pool.index("France") if "France" in teams_pool else 0)
+        a_idx = teams_pool.index("Real Madrid") if "Real Madrid" in teams_pool else (teams_pool.index("Croatia") if "Croatia" in teams_pool else min(1, len(teams_pool) - 1))
         pred_h_team = ac1.selectbox("🔵 Đội Chủ Nhà:", teams_pool, index=h_idx, key="ai_pred_ht")
         pred_a_team = ac2.selectbox("🔴 Đội Khách:", teams_pool, index=a_idx, key="ai_pred_at")
 
-        res = predict_match_ai_payload(pred_h_team, pred_a_team, match_stats_df)
-        pk1, pk2, pk3, pk4 = st.columns(4, gap="small")
-        pk1.metric(f"🔵 {pred_h_team} Thắng", f"{res['win_prob_home_pct']}%", f"xG kỳ vọng: {res['expected_goals_home']}", border=True)
+        # Use real 2025-27 xG form if available, fallback to match_stats_df
+        if not hist_xg_df.empty and (pred_h_team in modern_teams or pred_a_team in modern_teams):
+            hf_p = extract_team_recent_form(hist_xg_df, pred_h_team, "2027-06-01", n=12)
+            af_p = extract_team_recent_form(hist_xg_df, pred_a_team, "2027-06-01", n=12)
+            lam_h = max(0.35, min(3.8, (hf_p["xg_pg"] * af_p["xga_pg"] / 1.32) * 1.07))
+            lam_a = max(0.30, min(3.5, (af_p["xg_pg"] * hf_p["xga_pg"] / 1.32) * 0.94))
+            dc_res = dixon_coles_matrix(lam_h, lam_a)
+            res = {
+                "expected_goals_home": dc_res["lam_h"],
+                "expected_goals_away": dc_res["lam_a"],
+                "win_prob_home_pct": dc_res["prob_H"],
+                "draw_prob_pct": dc_res["prob_D"],
+                "win_prob_away_pct": dc_res["prob_A"],
+                "top_scorelines": dc_res["top_scorelines"],
+                "over_25": dc_res["over_25"],
+                "btts_yes": dc_res["btts_yes"],
+                "matrix_6x6": dc_res["matrix_6x6"],
+            }
+        else:
+            res = predict_match_ai_payload(pred_h_team, pred_a_team, match_stats_df)
+            dc_fb = dixon_coles_matrix(res["expected_goals_home"], res["expected_goals_away"])
+            res["over_25"] = dc_fb["over_25"]
+            res["btts_yes"] = dc_fb["btts_yes"]
+            res["matrix_6x6"] = dc_fb["matrix_6x6"]
+
+        pk1, pk2, pk3, pk4, pk5 = st.columns(5, gap="small")
+        pk1.metric(f"🔵 {pred_h_team[:13]} Thắng", f"{res['win_prob_home_pct']}%", f"xG kỳ vọng: {res['expected_goals_home']}", border=True)
         pk2.metric("⚖️ Tỷ lệ Hòa", f"{res['draw_prob_pct']}%", "90 phút chính thức", border=True)
-        pk3.metric(f"🔴 {pred_a_team} Thắng", f"{res['win_prob_away_pct']}%", f"xG kỳ vọng: {res['expected_goals_away']}", border=True)
+        pk3.metric(f"🔴 {pred_a_team[:13]} Thắng", f"{res['win_prob_away_pct']}%", f"xG kỳ vọng: {res['expected_goals_away']}", border=True)
         pk4.metric("🎯 Tỷ số sáng nhất", res["top_scorelines"][0]["score"], f"Xác suất {res['top_scorelines'][0]['prob_pct']}%", border=True)
+        pk5.metric("⚽ Tài 2.5 / BTTS", f"{res['over_25']}%", f"BTTS: {res['btts_yes']}%", border=True)
 
-        mat = np.zeros((6, 6))
-        for i in range(6):
-            for j in range(6):
-                p_i = (res["expected_goals_home"] ** i) * math.exp(-res["expected_goals_home"]) / math.factorial(i)
-                p_j = (res["expected_goals_away"] ** j) * math.exp(-res["expected_goals_away"]) / math.factorial(j)
-                mat[i, j] = round(p_i * p_j * 100.0, 2)
-
+        mat = res["matrix_6x6"]
         fig_mat = go.Figure(data=go.Heatmap(
             z=mat,
             x=[f"{pred_a_team}: {j} bàn" for j in range(6)],
@@ -2299,9 +2859,10 @@ def render_compare_ai_and_architecture_workspace(
             showscale=True,
         ))
         fig_mat.update_layout(
-            title=f"Ma trận Xác suất Tỷ số AI ({pred_h_team} vs {pred_a_team})",
+            title=f"Ma trận Xác suất Tỷ số Dixon-Coles AI ({pred_h_team} vs {pred_a_team})",
             height=390, margin=dict(l=20, r=20, t=45, b=20),
             paper_bgcolor="#131A26", plot_bgcolor="#0E1420", font=dict(color="#F8FAFC"),
+            yaxis=dict(autorange="reversed"),
         )
         st.plotly_chart(fig_mat, width="stretch", key=f"ai_mat_{pred_h_team}_{pred_a_team}")
 
@@ -2311,8 +2872,8 @@ def render_compare_ai_and_architecture_workspace(
         s1, s2, s3, s4 = st.columns(4, gap="small")
         s1.metric("⚡ Apache Spark Cluster", "Docker Ready", "spark-master + 2 workers", border=True)
         s2.metric("🗄️ CSDL Quan Hệ", "SQLite3 Active", "Users • Favorites • Notes", border=True)
-        s3.metric("🌐 REST JSON API", "ONLINE :8502" if api_ok else "OFFLINE", "5 Live Endpoints", border=True)
-        s4.metric("📦 Chế độ Offline Cache", "2,480+ Trận Local", "4.9M+ Sự kiện StatsBomb & Opta", border=True)
+        s3.metric("🌐 REST JSON API", "ONLINE :8502" if api_ok else "OFFLINE", "7 Live Endpoints", border=True)
+        s4.metric("📦 Kho Big Data 2026/27", "7,120+ Trận", "9.6M+ Sự kiện & 1,928 Trận Sắp Đá", border=True)
 
         with st.container(border=True):
             st.markdown("##### 🔌 Trình Kiểm Thử Trực Tiếp REST API JSON (`http://localhost:8502/api/...`)")
@@ -2320,6 +2881,8 @@ def render_compare_ai_and_architecture_workspace(
                 "Chọn Endpoint API để gọi thử trực tiếp:",
                 [
                     "http://localhost:8502/api/health",
+                    "http://localhost:8502/api/upcoming?league=ENG&limit=15",
+                    "http://localhost:8502/api/xpts?league=ENG&season=2026-2027",
                     "http://localhost:8502/api/standings",
                     "http://localhost:8502/api/players/top?limit=10",
                     "http://localhost:8502/api/predict?home=France&away=Croatia",
@@ -2335,21 +2898,20 @@ def render_compare_ai_and_architecture_workspace(
                     st.warning(f"Không thể kết nối endpoint: {exc}")
 
         with st.container(border=True):
-            st.markdown("##### ✅ Bảng Tổng Kết Nâng Cấp Dự Án So Với FotMob / SofaScore / AiScore")
+            st.markdown("##### ✅ Bảng Tổng Kết Nâng Cấp Dự Án So Với FotMob / SofaScore / Opta Analyst / Understat")
             summary_rows = [
-                ("1 & 21. Tỷ số trực tiếp & Cập nhật Real-time", "✅ Đã tích hợp (Auto-Run Live Replay Fragment 1.2s/phút)"),
-                ("4 & 23. Đa giải đấu & Dữ liệu lịch sử", "✅ Đã tích hợp (10 giải lớn: 147 trận WC, 1.842 trận UCL, 102 Euro, Copa, AFCON, Top 5 Châu Âu — 2.480+ trận)"),
+                ("1 & 21. Tỷ số trực tiếp & Đồng bộ ESPN Real-time", "✅ Đã tích hợp (Auto-Run Live Replay + Live ESPN Odds, Standings & Kickoff GMT+7)"),
+                ("4 & 23. Đa giải đấu 2025/26 – 2026/27 & World Cup 2026", "✅ Đã tích hợp (15+ giải lớn: WC 2026/22/18, UCL, UEL, Top 5 Châu Âu 2025-27 — 5.190+ trận sự kiện + 60K trận xG)"),
+                ("🔮 Nghiên cứu & Dự đoán Trận Chưa Diễn Ra (Pre-Match Lab)", "🌟 ĐỘT PHÁ (1.928 trận chưa đá, Ensemble Opta ML + Dixon-Coles + DraftKings Value Edge, 4-Zone Squad Power, What-If Simulator)"),
                 ("5. Theo dõi nhiều trận cùng lúc", "✅ Đã tích hợp (Multi-Match Split Screen 2–4 trận)"),
                 ("11 & 32. Thay người, Sự kiện & Bình luận trực tiếp", "✅ Đã tích hợp (Timeline + Live Commentary Feed)"),
-                ("14 & 36. Biểu đồ Radar kỹ năng & So sánh cầu thủ", "✅ Đã tích hợp (Radar 6 trục + Dual Compare)"),
-                ("16, 17, 18, 19. Shot Map 2D, Pass Network, Phòng ngự, Momentum", "✅ Đã tích hợp đầy đủ chuẩn SofaScore Pro"),
-                ("22, 28, 44. Cơ sở dữ liệu SQLite, Đăng nhập Auth & Yêu thích", "✅ Đã tích hợp (Lưu tài khoản, Yêu thích, Dự đoán)"),
-                ("27, 29, 30, 31. Tìm kiếm toàn cục, Chia sẻ, Đa ngôn ngữ VI/EN, Responsive", "✅ Đã tích hợp đầy đủ"),
-                ("33, 34, 35, 38. Bảng xếp hạng, Lịch thi đấu, Thống kê toàn mùa, Chuyển nhượng", "✅ Đã tích hợp (BXH A-H + 17.9k cầu thủ FIFA)"),
-                ("37, 39, 40. AI Dự đoán tỷ số, Video Highlights, Bản tin tự động", "✅ Đã tích hợp (Monte Carlo 10k + Ma trận Poisson 6×6)"),
-                ("41, 42, 43, 45. Spark/REST API (:8502), Caching, Offline & Xuất dữ liệu CSV/JSON/HTML", "🌟 VƯỢT TRỘI (FotMob/SofaScore/AiScore không cho xuất CSV/JSON)"),
+                ("14 & 36. Biểu đồ Radar kỹ năng & So sánh cầu thủ", "✅ Đã tích hợp (Radar 6 trục + Tactical 8 trục + Dual Compare)"),
+                ("16–19. Shot Map 2D, Pass Network, Momentum, Field Tilt %, PPDA", "✅ Đã tích hợp đầy đủ chuẩn Opta Analyst / FotMob / Understat Pro"),
+                ("22, 28, 44. Cơ sở dữ liệu SQLite, Đăng nhập Auth & Yêu thích", "✅ Đã tích hợp (Lưu tài khoản, Yêu thích, Dự đoán trận chưa đá)"),
+                ("33, 34, 35, 38. BXH Thực Tế & Điểm Kỳ Vọng xPTS, Lịch Thi Đấu", "✅ Đã tích hợp (18 BXH giải đấu + xPTS Understat + Tứ phân vị xG/xGA + 17.9k cầu thủ FIFA)"),
+                ("41–45. Spark/REST API (:8502), Caching, Offline & Xuất dữ liệu CSV/JSON/HTML", "🌟 VƯỢT TRỘI (7 Live API Endpoints + Xuất CSV/JSON/HTML)"),
             ]
-            st.dataframe(pd.DataFrame(summary_rows, columns=["Nhóm tiêu chí trong bảng so sánh (1–45)", "Trạng thái trên Dự án của nhóm"]), width="stretch", hide_index=True)
+            st.dataframe(pd.DataFrame(summary_rows, columns=["Nhóm tiêu chí nghiên cứu bóng đá chuyên nghiệp", "Trạng thái trên Dự án"]), width="stretch", hide_index=True)
 
 
 # ==========================================================
@@ -2361,83 +2923,116 @@ def render_sidebar_pro_controls(catalog: dict):
 
     pending_ws = st.session_state.pop("pending_workspace", None)
     if pending_ws:
+        if pending_ws == "ws_ai":
+            pending_ws = "ws_prematch"
         st.session_state["platform_workspace"] = pending_ws
 
     if "ui_lang" not in st.session_state:
         st.session_state["ui_lang"] = "vi"
     if "auth_user" not in st.session_state:
-        st.session_state["auth_user"] = {"username": "demo", "display_name": "Chuyên Gia Phân Tích (Demo)", "role": "analyst"}
-    if "platform_workspace" not in st.session_state:
-        st.session_state["platform_workspace"] = "ws_match"
+        # Mỗi người truy cập công khai có phiên riêng độc lập (không ghi đè Yêu thích / Dự đoán của nhau)
+        st.session_state["auth_user"] = None
+    ws_options = ["ws_today", "ws_match", "ws_prematch", "ws_hub", "ws_live"]
+    if "platform_workspace" not in st.session_state or st.session_state["platform_workspace"] not in ws_options:
+        st.session_state["platform_workspace"] = "ws_today"
 
-    lang_choice = st.sidebar.radio(
-        "🌐 Ngôn ngữ / Language:",
-        ["vi", "en"],
-        format_func=lambda x: "🇻🇳 Tiếng Việt" if x == "vi" else "🇬🇧 English",
-        horizontal=True,
-        key="ui_lang",
-    )
+    lang_choice = st.session_state["ui_lang"]
 
-    ws_options = ["ws_match", "ws_live", "ws_hub", "ws_ai"]
-    workspace = st.sidebar.radio(
-        tr("nav_title", lang_choice),
-        ws_options,
-        format_func=lambda k: tr(k, lang_choice),
-        key="platform_workspace",
-    )
+    # Executive Brand Card + 3-Metric Strip (Clean SaaS aesthetic)
+    comp_cnt = sum(1 for k in catalog if len(catalog[k]) > 0)
+    played_cnt = sum(1 for mlist in catalog.values() for m in mlist if not m.get("is_upcoming"))
+    up_cnt = sum(1 for mlist in catalog.values() for m in mlist if m.get("is_upcoming"))
+    st.sidebar.markdown(compact_html(f"""
+    <div style="background:linear-gradient(145deg,#111827 0%,#0E1525 100%);border:1px solid rgba(148,163,184,0.14);border-radius:12px;padding:12px 13px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;justify-content:center;margin-bottom:9px;">
+            <span style="font-family:'Plus Jakarta Sans',sans-serif;font-size:15px;font-weight:800;color:#F8FAFC;letter-spacing:0.05em;">NCKH TUD65</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;border-top:1px solid rgba(148,163,184,0.10);padding-top:8px;text-align:center;">
+            <div><div style="font-size:12.5px;font-weight:800;color:#F1F5F9;">{played_cnt:,}</div><div style="font-size:9.5px;color:#64748B;font-weight:600;">Đã đá</div></div>
+            <div style="border-left:1px solid rgba(148,163,184,0.10);border-right:1px solid rgba(148,163,184,0.10);"><div style="font-size:12.5px;font-weight:800;color:#38BDF8;">{up_cnt:,}</div><div style="font-size:9.5px;color:#64748B;font-weight:600;">Sắp đá</div></div>
+            <div><div style="font-size:12.5px;font-weight:800;color:#F1F5F9;">{comp_cnt}</div><div style="font-size:9.5px;color:#64748B;font-weight:600;">Giải đấu</div></div>
+        </div>
+    </div>
+    """), unsafe_allow_html=True)
 
-    # Tìm kiếm toàn cục (#27)
-    with st.sidebar.expander("🔎 Tìm kiếm toàn cục (Global Search)", expanded=False):
-        q = st.text_input("Từ khóa:", placeholder=tr("search_placeholder", lang_choice), key="global_search_input")
+    st.sidebar.markdown(f'<div style="color:#64748B;font-size:0.69rem;font-weight:800;letter-spacing:0.1em;margin:0 0 6px 2px;">{html.escape(tr("nav_title", lang_choice))}</div>', unsafe_allow_html=True)
+    current_ws = st.session_state["platform_workspace"]
+    for ws_k in ws_options:
+        btn_type = "primary" if ws_k == current_ws else "secondary"
+        if st.sidebar.button(tr(ws_k, lang_choice), key=f"nav_btn_{ws_k}", type=btn_type, width="stretch"):
+            if ws_k != current_ws:
+                st.session_state["platform_workspace"] = ws_k
+                st.rerun()
+    return lang_choice, st.session_state["platform_workspace"]
+
+
+def render_sidebar_footer_tools(catalog: dict, lang_choice: str = "vi"):
+    """Gom Tìm kiếm, Tài khoản & Ngôn ngữ vào 1 ngăn gọn ở đáy Sidebar."""
+    user = st.session_state.get("auth_user")
+    u_tag = f"@{user['username']}" if user else "Khách"
+    with st.sidebar.expander(f"Tìm kiếm & Tài khoản ({u_tag})", expanded=False):
+        q = st.text_input("Tìm nhanh đội / trận", placeholder=tr("search_placeholder", lang_choice), key="global_search_input")
         if q and len(q.strip()) >= 2:
             ql = q.strip().lower()
             found_m = []
             for cn, mlist in catalog.items():
                 for m in mlist:
-                    goal_names = " ".join(str(g.get("player", "")) for g in (m.get("goals") or []))
-                    hay = f"{m.get('label', '')} {m.get('home_team', '')} {m.get('away_team', '')} {m.get('stadium', '')} {goal_names}".lower()
+                    hay = f"{m.get('label', '')} {m.get('home_team', '')} {m.get('away_team', '')}".lower()
                     if ql in hay:
                         found_m.append((cn, m))
-            st.caption(f"Tìm thấy **{len(found_m)}** trận liên quan:")
+            st.caption(f"Tìm thấy **{len(found_m)}** trận:")
             for idx_s, (cn, fm) in enumerate(found_m[:6]):
-                if st.button(f"⚽ {fm['label']}", key=f"gs_jump_{fm['id']}_{idx_s}", width="stretch"):
-                    st.session_state["jump_comp"] = cn
-                    st.session_state["jump_match_label"] = fm["label"]
-                    st.session_state["pending_workspace"] = "ws_match"
+                btn_ic = "🔮" if fm.get("is_upcoming") else "⚽"
+                if st.button(f"{btn_ic} {fm['label']}", key=f"gs_jump_{fm['id']}_{idx_s}", width="stretch"):
+                    if fm.get("is_upcoming"):
+                        st.session_state["jump_upcoming_match_id"] = str(fm.get("upcoming_match_id") or "")
+                        st.session_state["pending_workspace"] = "ws_prematch"
+                    else:
+                        st.session_state["jump_comp"] = cn
+                        st.session_state["jump_match_label"] = fm["label"]
+                        st.session_state["pending_workspace"] = "ws_match"
                     st.rerun()
 
-    # Tài khoản Auth + Danh sách Yêu thích SQLite (#22, #28, #44)
-    user = st.session_state.get("auth_user")
-    exp_label = f"👤 {user['display_name']}" if user else "🔐 Đăng nhập / Đăng ký"
-    with st.sidebar.expander(exp_label, expanded=False):
+        st.markdown("<hr style='margin:8px 0;border-color:rgba(148,163,184,0.12);'>", unsafe_allow_html=True)
+        st.radio(
+            "Ngôn ngữ",
+            ["vi", "en"],
+            format_func=lambda x: "Tiếng Việt" if x == "vi" else "English",
+            horizontal=True,
+            key="ui_lang",
+        )
+        st.markdown("<hr style='margin:8px 0;border-color:rgba(148,163,184,0.12);'>", unsafe_allow_html=True)
         if user:
-            st.caption(f"Đang đăng nhập: **`@{user['username']}`** (SQLite Auth)")
             favs = list_favorites(user["username"])
             if favs:
-                st.markdown("**⭐ Danh sách Yêu thích đã lưu:**")
-                for idx_fv, fv in enumerate(favs[:8]):
-                    ic = "🏟️" if fv["item_type"] == "match" else "👟"
-                    st.caption(f"{ic} {fv['item_label']}")
+                st.caption(f"Đã lưu **{len(favs)}** mục yêu thích:")
+                for fv in favs[:5]:
+                    st.caption(f"• {fv['item_label']}")
             else:
-                st.caption("Chưa có mục Yêu thích nào. Hãy bấm ☆ trên trận đấu hoặc cầu thủ!")
-            if st.button("🚪 Đăng xuất / Đổi tài khoản", key="btn_logout", width="stretch"):
+                st.caption("Chưa có mục yêu thích nào.")
+            if st.button("Đăng xuất", key="btn_logout", width="stretch"):
                 st.session_state["auth_user"] = None
                 st.rerun()
         else:
-            auth_mode = st.radio("Chế độ:", ["Đăng nhập", "Đăng ký mới"], horizontal=True, key="auth_mode_rad")
-            u_in = st.text_input("Tên đăng nhập:", value="demo" if auth_mode == "Đăng nhập" else "", key="auth_u")
-            dn_in = st.text_input("Tên hiển thị:", key="auth_dn") if auth_mode == "Đăng ký mới" else ""
-            pw_in = st.text_input("Mật khẩu:", type="password", value="123456" if auth_mode == "Đăng nhập" else "", key="auth_pw")
+            guest_favs = list_favorites(_GUEST_SENTINEL)
+            if guest_favs:
+                st.caption(f"Yêu thích phiên này (**{len(guest_favs)}**):")
+                for fv in guest_favs[:5]:
+                    st.caption(f"• {fv['item_label']}")
+            auth_mode = st.radio("Tài khoản (lưu lâu dài)", ["Đăng nhập", "Đăng ký"], horizontal=True, key="auth_mode_rad")
+            u_in = st.text_input("Username", value="demo" if auth_mode == "Đăng nhập" else "", key="auth_u")
+            dn_in = st.text_input("Tên hiển thị", key="auth_dn") if auth_mode == "Đăng ký" else ""
+            pw_in = st.text_input("Mật khẩu", type="password", value="123456" if auth_mode == "Đăng nhập" else "", key="auth_pw")
             if auth_mode == "Đăng nhập":
-                if st.button("✅ Đăng nhập", key="btn_do_login", width="stretch"):
+                if st.button("Đăng nhập", key="btn_do_login", width="stretch"):
                     acc = authenticate_user(u_in, pw_in)
                     if acc:
                         st.session_state["auth_user"] = acc
                         st.rerun()
                     else:
-                        st.error("Sai tài khoản hoặc mật khẩu (thử demo / 123456).")
+                        st.error("Sai tài khoản hoặc mật khẩu (demo / 123456).")
             else:
-                if st.button("✨ Tạo tài khoản SQLite", key="btn_do_reg", width="stretch"):
+                if st.button("Tạo tài khoản", key="btn_do_reg", width="stretch"):
                     ok, msg = register_user(u_in, dn_in, pw_in)
                     if ok:
                         st.success(msg)
@@ -2445,5 +3040,3 @@ def render_sidebar_pro_controls(catalog: dict):
                         st.rerun()
                     else:
                         st.error(msg)
-
-    return lang_choice, workspace

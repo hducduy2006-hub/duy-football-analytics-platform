@@ -1,0 +1,36 @@
+[theme]
+base = "dark"
+primaryColor = "#38BDF8"
+backgroundColor = "#090D16"
+secondaryBackgroundColor = "#0E1420"
+textColor = "#F1F5F9"
+font = "sans serif"
+
+[client]
+# "viewer" = người xem công khai không thấy menu dev (Rerun / Settings / Deploy)
+toolbarMode = "viewer"
+showErrorDetails = false
+
+[runner]
+# Hủy ngay tác vụ cũ khi người dùng bấm liên tục -> cảm giác bấm mượt tức thì
+fastReruns = true
+magicEnabled = false
+
+[server]
+headless = true
+port = 8501
+address = "0.0.0.0"
+runOnSave = false
+fileWatcherType = "none"
+maxUploadSize = 15
+maxMessageSize = 50
+enableXsrfProtection = true
+# Nén WebSocket giảm 70-85% băng thông qua Cloudflare Tunnel & mạng 4G
+enableWebsocketCompression = true
+# Giữ kết nối WebSocket ổn định xuyên qua Cloudflare Tunnel (không bị rớt phiên)
+websocketPingInterval = 25
+# Giải phóng RAM nhanh sau 45s khi người xem đóng tab -> chịu tải nhiều người dùng hơn
+disconnectedSessionTTL = 45
+
+[browser]
+gatherUsageStats = false

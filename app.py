@@ -4,16 +4,25 @@ import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
 import os
+import io
+import gzip
 import json
 import base64
 import hashlib
 import html
 import unicodedata as _ud
 import urllib.request
+try:
+    from PIL import Image as _PILImage
+except Exception:
+    _PILImage = None
 from pro_features import (
     tr,
     load_opta_ucl_match_bundle,
+    save_user_prediction,
+    get_user_prediction,
     render_sidebar_pro_controls,
+    render_sidebar_footer_tools,
     render_player_radar_and_fifa_subtab,
     render_match_action_bar,
     render_attack_momentum_and_defense,
@@ -22,443 +31,779 @@ from pro_features import (
     render_tournament_hub_workspace,
     render_compare_ai_and_architecture_workspace,
 )
+from prematch_research import (
+    build_prematch_research_package,
+    get_upcoming_catalog_entries,
+    load_espn_live_cache,
+    load_historical_xg_df,
+    load_upcoming_fixtures_df,
+    render_prematch_research_workspace,
+    render_single_upcoming_dossier,
+)
+from daily_realtime_hub import render_daily_realtime_home
+from daily_match_center_bridge import build_full_match_center_bundle
+from team_logos_store import get_team_logo_url
+from player_avatar_store import (
+    get_player_avatar_b64,
+    make_broadcast_bust_svg,
+    prefetch_match_avatars,
+)
 
 # --- CẤU HÌNH GIAO DIỆN CHUẨN SOFASCORE / FOTMOB ---
 st.set_page_config(
-    page_title="SofaScore - Football Analytics & Big Data Platform",
+    page_title="NCKH TUD65 - Football Analytics & Big Data Platform",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+
+@st.cache_resource(show_spinner=False)
+def _init_cloud_dataset_once():
+    try:
+        from cloud_data_bootstrap import bootstrap_cloud_data_once
+        return bootstrap_cloud_data_once()
+    except Exception:
+        return {"mode": "offline"}
+
+
+_init_cloud_dataset_once()
+
 st.markdown("""
 <style>
-    /* SofaScore Dark Theme */
-    .stApp {
-        background-color: #0E121A;
-        color: #FFFFFF;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
+
+    :root {
+        color-scheme: dark;
+        --bg-canvas: #090D16;
+        --bg-sidebar: #0C111C;
+        --bg-surface: #111827;
+        --bg-elevated: #161F31;
+        --border-subtle: rgba(148, 163, 184, 0.13);
+        --border-accent: rgba(56, 189, 248, 0.38);
+        --text-primary: #F8FAFC;
+        --text-secondary: #94A3B8;
+        --text-muted: #64748B;
+        --accent-sky: #38BDF8;
+        --accent-blue: #2563EB;
+        --accent-rose: #F43F5E;
+        --accent-green: #10B981;
+        --accent-amber: #F59E0B;
     }
 
-    /* SofaScore Match Header Banner */
+    html, body, .stApp, [data-testid="stAppViewContainer"] {
+        background-color: var(--bg-canvas) !important;
+        color: var(--text-primary) !important;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+        -webkit-font-smoothing: antialiased;
+    }
+
+    h1, h2, h3, h4, h5 {
+        font-family: 'Plus Jakarta Sans', 'Inter', sans-serif !important;
+        letter-spacing: -0.02em !important;
+        color: var(--text-primary) !important;
+    }
+    h2 { font-size: 1.35rem !important; font-weight: 800 !important; margin-bottom: 0.5rem !important; }
+    h3 { font-size: 1.15rem !important; font-weight: 800 !important; margin-bottom: 0.4rem !important; }
+    h4 { font-size: 0.98rem !important; font-weight: 700 !important; margin: 0.4rem 0 0.5rem !important; color: #E2E8F0 !important; }
+    h5 { font-size: 0.9rem !important; font-weight: 700 !important; margin: 0 0 0.5rem !important; color: #CBD5E1 !important; }
+
+    /* Clean Main Container Spacing (Maximized Usable Viewport) */
+    [data-testid="stMainBlockContainer"], .main .block-container {
+        padding-top: 0.72rem !important;
+        padding-bottom: 1.65rem !important;
+        padding-left: 1.45rem !important;
+        padding-right: 1.45rem !important;
+        max-width: 1460px !important;
+    }
+    [data-testid="stHeader"],
+    [data-testid="stToolbar"],
+    .stAppToolbar {
+        background: transparent !important;
+        pointer-events: none !important;
+        height: 2.2rem !important;
+    }
+    [data-testid="stHeader"] button,
+    [data-testid="stToolbar"] button,
+    .stAppToolbar button,
+    [data-testid="stExpandSidebarButton"],
+    [data-testid="collapsedControl"] {
+        pointer-events: auto !important;
+    }
+    [data-testid="stAppDeployButton"], #MainMenu, footer {
+        display: none !important;
+    }
+    /* Anti-Flicker Smooth Rerun Experience (zero grey flash on fast <200ms clicks) */
+    [data-stale="true"] {
+        opacity: 0.88 !important;
+        transition: opacity 200ms ease 200ms !important;
+    }
+    [data-testid="stStatusWidget"] {
+        opacity: 0.65;
+        transform: scale(0.88);
+        transform-origin: top right;
+    }
+
+    /* ============================================================
+       PRO SIDEBAR DESIGN (MODERN SAAS / FOTMOB NAVIGATION)
+       ============================================================ */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0C111C 0%, #090D16 100%) !important;
+        border-right: 1px solid var(--border-subtle) !important;
+    }
+    [data-testid="stSidebar"] > div:first-child {
+        padding-top: 0.9rem !important;
+    }
+    @media (min-width: 992px) {
+        [data-testid="stSidebar"] {
+            min-width: 314px !important;
+            width: 314px !important;
+        }
+    }
+    /* Pure SaaS Vertical Navigation Buttons inside Sidebar */
+    [data-testid="stSidebar"] .stButton > button {
+        justify-content: flex-start !important;
+        text-align: left !important;
+        padding: 0.45rem 0.85rem !important;
+        border-radius: 9px !important;
+        font-size: 13.2px !important;
+        font-weight: 600 !important;
+        margin-bottom: 1px !important;
+    }
+    [data-testid="stSidebar"] .stButton > button[kind="secondary"] {
+        background: transparent !important;
+        border: 1px solid transparent !important;
+        color: #94A3B8 !important;
+    }
+    [data-testid="stSidebar"] .stButton > button[kind="secondary"]:hover {
+        background: rgba(148, 163, 184, 0.09) !important;
+        border-color: rgba(148, 163, 184, 0.14) !important;
+        color: #F8FAFC !important;
+    }
+    [data-testid="stSidebar"] .stButton > button[kind="primary"] {
+        background: linear-gradient(90deg, rgba(56, 189, 248, 0.18) 0%, rgba(37, 99, 235, 0.10) 100%) !important;
+        border: 1px solid rgba(56, 189, 248, 0.38) !important;
+        box-shadow: inset 3px 0 0 #38BDF8 !important;
+        color: #FFFFFF !important;
+        font-weight: 700 !important;
+    }
+    /* Keep horizontal radios clean & readable (NEVER hide text!) */
+    [data-testid="stSidebar"] [data-testid="stRadio"] > div[role="radiogroup"][aria-orientation="horizontal"] {
+        background: #111827 !important;
+        border: 1px solid var(--border-subtle) !important;
+        border-radius: 9px !important;
+        padding: 4px 8px !important;
+        gap: 8px !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stRadio"] p {
+        font-size: 12.2px !important;
+        font-weight: 600 !important;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {
+        color: #64748B !important;
+        font-size: 0.72rem !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.06em !important;
+        text-transform: uppercase !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stSelectbox"] {
+        margin: 0.05rem 0 0.45rem !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div {
+        padding-left: 8px !important;
+        padding-right: 4px !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] div {
+        font-size: 12px !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div {
+        border-radius: 9px !important;
+        border: 1px solid rgba(148, 163, 184, 0.18) !important;
+        background-color: #111827 !important;
+        transition: border-color 0.15s ease !important;
+    }
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div:hover {
+        border-color: rgba(56, 189, 248, 0.45) !important;
+    }
+    div[data-baseweb="popover"]:has(ul[role="listbox"]),
+    div[data-baseweb="popover"]:has([data-testid="stVirtualDropdown"]) {
+        min-width: 360px !important;
+        max-width: min(500px, 94vw) !important;
+    }
+    ul[role="listbox"] li[role="option"],
+    [data-testid="stVirtualDropdown"] li[role="option"] {
+        font-size: 13px !important;
+        padding: 7px 12px !important;
+    }
+    [data-testid="stExpander"] {
+        border: 1px solid var(--border-subtle) !important;
+        border-radius: 10px !important;
+        background: rgba(17, 24, 39, 0.55) !important;
+    }
+    [data-testid="stExpander"] summary {
+        font-size: 12.8px !important;
+        font-weight: 600 !important;
+        color: #CBD5E1 !important;
+    }
+    .sidebar-section-hdr {
+        margin: 0.85rem 0 0.45rem;
+        padding-top: 0.75rem;
+        border-top: 1px solid var(--border-subtle);
+        color: #64748B;
+        font-size: 0.69rem;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+    }
+
+    /* ============================================================
+       PRO SEGMENTED TABS (SCROLLABLE ON MOBILE + TACTILE CLICK FEEL)
+       ============================================================ */
+    div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+        background: #0F1624 !important;
+        border: 1px solid var(--border-subtle) !important;
+        border-radius: 11px !important;
+        padding: 3.5px !important;
+        gap: 4px !important;
+        margin-bottom: 11px !important;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03) !important;
+        overflow-x: auto !important;
+        flex-wrap: nowrap !important;
+        scrollbar-width: none !important;
+        -webkit-overflow-scrolling: touch;
+    }
+    div[data-testid="stTabs"] [data-baseweb="tab-list"]::-webkit-scrollbar {
+        display: none !important;
+    }
+    div[data-testid="stTabs"] button[role="tab"] {
+        border-radius: 8px !important;
+        padding: 6.5px 13px !important;
+        height: auto !important;
+        white-space: nowrap !important;
+        flex: 0 0 auto !important;
+        cursor: pointer !important;
+        user-select: none !important;
+        font-weight: 600 !important;
+        font-size: 12.8px !important;
+        color: #94A3B8 !important;
+        background: transparent !important;
+        border: 1px solid transparent !important;
+        box-shadow: none !important;
+        outline: none !important;
+        transition: transform 90ms cubic-bezier(0.2, 0, 0, 1), background-color 120ms ease, border-color 120ms ease, color 120ms ease !important;
+    }
+    div[data-testid="stTabs"] button[role="tab"]:active {
+        transform: scale(0.965) !important;
+    }
+    div[data-testid="stTabs"] button[role="tab"] p {
+        color: inherit !important;
+        font-size: 12.8px !important;
+        font-weight: inherit !important;
+    }
+    div[data-testid="stTabs"] button[role="tab"]:hover {
+        color: #F8FAFC !important;
+        background: rgba(148, 163, 184, 0.10) !important;
+    }
+    div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+        background: linear-gradient(135deg, rgba(56, 189, 248, 0.22) 0%, rgba(37, 99, 235, 0.24) 100%) !important;
+        border: 1px solid rgba(56, 189, 248, 0.45) !important;
+        color: #FFFFFF !important;
+        font-weight: 700 !important;
+        box-shadow: 0 2px 10px rgba(2, 132, 199, 0.20) !important;
+    }
+    div[data-testid="stTabs"] button[role="tab"]:focus,
+    div[data-testid="stTabs"] button[role="tab"]:focus-visible {
+        box-shadow: none !important;
+        outline: none !important;
+    }
+    div[data-testid="stTabs"] [data-baseweb="tab-highlight"],
+    div[data-testid="stTabs"] [data-baseweb="tab-border"] {
+        display: none !important;
+        background: transparent !important;
+    }
+
+    /* Sleek Uniform Buttons & Popovers with Crisp Tactile Press Feel */
+    .stButton > button, .stLinkButton > a, [data-testid="stPopover"] > button, [data-testid="stDownloadButton"] > button {
+        background: #111827 !important;
+        border: 1px solid rgba(148, 163, 184, 0.17) !important;
+        border-radius: 9px !important;
+        color: #E2E8F0 !important;
+        font-size: 12.4px !important;
+        font-weight: 600 !important;
+        padding: 0.34rem 0.8rem !important;
+        min-height: 34px !important;
+        cursor: pointer !important;
+        user-select: none !important;
+        transition: transform 90ms cubic-bezier(0.2, 0, 0, 1), background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease !important;
+    }
+    .stButton > button:hover, .stLinkButton > a:hover, [data-testid="stPopover"] > button:hover, [data-testid="stDownloadButton"] > button:hover {
+        background: #182438 !important;
+        border-color: rgba(56, 189, 248, 0.48) !important;
+        color: #FFFFFF !important;
+        box-shadow: 0 2px 10px rgba(56, 189, 248, 0.12) !important;
+    }
+    .stButton > button:active, .stLinkButton > a:active, [data-testid="stPopover"] > button:active, [data-testid="stDownloadButton"] > button:active {
+        transform: scale(0.972) !important;
+        background: #1D2B42 !important;
+    }
+
+    /* ============================================================
+       BROADCAST-QUALITY MATCH HEADER BANNER (COMPACT SPACE)
+       ============================================================ */
     .match-header-card {
-        background: linear-gradient(135deg, #131A26 0%, #1A2436 100%);
-        border-radius: 16px;
-        padding: 22px 28px;
-        margin-bottom: 24px;
-        border: 1px solid #283750;
-        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+        --hdr-mid-w: 168px;
+        background: radial-gradient(circle at 50% -20%, rgba(56, 189, 248, 0.11) 0%, rgba(17, 24, 39, 0.96) 55%, #0E1420 100%);
+        border-radius: 14px;
+        padding: 12px 20px 10px;
+        margin-bottom: 8px;
+        border: 1px solid var(--border-subtle);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.34);
     }
     .match-top-meta {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
         align-items: center;
-        gap: 12px;
-        padding-bottom: 14px;
-        border-bottom: 1px solid rgba(56, 189, 248, 0.14);
+        gap: 16px;
+        padding-bottom: 9px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.10);
+        font-size: 11.8px;
     }
-    .score-badge {
-        background: radial-gradient(circle at 50% 35%, #172236 0%, #0B0F19 100%);
-        padding: 14px 28px;
-        min-width: 176px;
-        border-radius: 16px;
-        border: 1.5px solid #38BDF8;
-        display: inline-flex;
+    .match-top-meta > :first-child { justify-self: start; text-align: left; min-width: 0; }
+    .match-top-meta > .match-status-pill { justify-self: center; white-space: nowrap; }
+    .match-top-meta > :last-child { justify-self: end; text-align: right; min-width: 0; }
+    .match-status-pill {
+        background: rgba(16, 185, 129, 0.14);
+        border: 1px solid rgba(16, 185, 129, 0.38);
+        color: #34D399;
+        font-size: 10.2px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        padding: 2px 10px;
+        border-radius: 999px;
+        text-transform: uppercase;
+    }
+    .match-score-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) var(--hdr-mid-w) minmax(0, 1fr);
+        align-items: center;
+        gap: 16px;
+        margin: 12px 0 10px;
+    }
+    .match-team-col {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 0;
+    }
+    .match-team-col.home { align-items: flex-end; }
+    .match-team-col.away { align-items: flex-start; }
+    .match-team-name {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        font-size: clamp(19px, 2.2vw, 28px);
+        font-weight: 800;
+        color: #FFFFFF;
+        line-height: 1.15;
+        word-break: keep-all;
+    }
+    .match-team-name.home { justify-content: flex-end; text-align: right; }
+    .match-team-name.away { justify-content: flex-start; text-align: left; }
+    .team-sub-stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        font-size: 11.5px;
+        color: #94A3B8;
+        font-weight: 600;
+    }
+    .team-sub-chip {
+        background: rgba(15, 23, 42, 0.72);
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        padding: 2px 8px;
+        border-radius: 6px;
+        white-space: nowrap;
+    }
+    .team-sub-chip.home-xg { color: #7DD3FC; border-color: rgba(56, 189, 248, 0.30); background: rgba(56, 189, 248, 0.08); }
+    .team-sub-chip.away-xg { color: #FDA4AF; border-color: rgba(244, 63, 94, 0.30); background: rgba(244, 63, 94, 0.08); }
+    .score-center-box {
+        display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        box-shadow: 0 4px 20px rgba(56, 189, 248, 0.22);
+        text-align: center;
+        width: 100%;
+        min-width: 0;
+        padding: 10px 14px;
+        border-radius: 14px;
+        background: rgba(9, 13, 22, 0.85);
+        border: 1px solid rgba(148, 163, 184, 0.18);
     }
     .score-numbers {
         display: grid;
         grid-template-columns: 1fr auto 1fr;
         align-items: center;
         justify-items: center;
-        gap: 14px;
         width: 100%;
-        margin: 0;
-        font-size: 44px;
+        gap: 12px;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        font-size: 38px;
         line-height: 1;
         color: #FFFFFF;
-        font-weight: 900;
+        font-weight: 800;
         font-variant-numeric: tabular-nums;
     }
-    .score-digit.home { justify-self: end; text-align: right; }
-    .score-digit.away { justify-self: start; text-align: left; }
-    .score-sep { color: #64748B; font-weight: 800; font-size: 36px; line-height: 1; }
-    .pen-badge {
-        background: rgba(250, 204, 21, 0.16);
-        border: 1px solid #FACC15;
-        color: #FDE047;
-        font-size: 11px;
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        padding: 3px 12px;
-        border-radius: 999px;
-        text-transform: uppercase;
-        display: inline-block;
-        margin-top: 8px;
-    }
-    .match-score-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-        align-items: center;
-        gap: 28px;
-        margin: 22px 0 20px;
-    }
-    .match-team-name {
-        min-width: 0;
-        margin: 0 !important;
-        padding: 0 !important;
-        font-size: clamp(22px, 2.4vw, 32px);
-        font-weight: 800;
-        color: #F8FAFC;
-        line-height: 1.25;
-        overflow-wrap: anywhere;
+    .score-vs-text {
         display: flex;
         align-items: center;
-        gap: 12px;
-    }
-    .match-team-name.home { justify-content: flex-end; text-align: right; }
-    .match-team-name.away { justify-content: flex-start; text-align: left; }
-    .match-team-col {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        min-width: 0;
-    }
-    .match-team-col.home { align-items: flex-end; }
-    .match-team-col.away { align-items: flex-start; }
-    .team-meta-pills {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        align-items: center;
-    }
-    .team-meta-pill {
-        background: rgba(15, 23, 42, 0.78);
-        border: 1px solid #2A3B54;
-        color: #CBD5E1;
-        font-size: 11.5px;
-        font-weight: 700;
-        padding: 3px 10px;
-        border-radius: 999px;
-        white-space: nowrap;
-    }
-    .team-meta-pill.home-accent {
-        border-color: rgba(56, 189, 248, 0.45);
+        justify-content: center;
+        width: 100%;
+        text-align: center;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        font-size: 26px;
+        font-weight: 900;
+        line-height: 1.08;
+        letter-spacing: 0.12em;
         color: #7DD3FC;
-        background: rgba(56, 189, 248, 0.12);
     }
-    .team-meta-pill.away-accent {
-        border-color: rgba(255, 77, 109, 0.45);
-        color: #FDA4AF;
-        background: rgba(255, 77, 109, 0.12);
-    }
-    .match-goal-lists {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        gap: 16px;
-        margin: 0 0 16px;
-    }
-    .match-goal-side {
-        min-width: 0;
-        padding: 12px 16px;
-        border: 1px solid #29364b;
-        border-radius: 10px;
-        background: rgba(8, 13, 22, 0.6);
-    }
-    .match-goal-side.home { border-left: 3.5px solid #38BDF8; }
-    .match-goal-side.away { border-left: 3.5px solid #FF4D6D; }
-    .match-goal-team {
-        margin-bottom: 8px;
-        color: #E2E8F0;
-        font-size: 12px;
-        font-weight: 800;
-        letter-spacing: .04em;
-        overflow-wrap: anywhere;
-    }
-    .match-goal-rows { display: grid; gap: 6px; }
-    .match-goal-row {
-        display: flex;
-        align-items: flex-start;
-        gap: 10px;
-        min-width: 0;
-        color: #F1F5F9;
-        font-size: 14px;
-        line-height: 1.35;
-    }
-    .match-goal-minute {
-        flex: 0 0 48px;
-        color: #9FB0C8;
+    .score-sub-note {
+        color: #94A3B8;
+        font-size: 11px;
         font-weight: 700;
+        margin-top: 4px;
+        text-align: center;
         white-space: nowrap;
     }
-    .match-goal-player { min-width: 0; overflow-wrap: anywhere; }
-    .match-goal-empty { color: #94A3B8; font-size: 13px; }
+    .score-sep { color: #475569; font-weight: 700; font-size: 28px; }
+    .pen-badge {
+        background: rgba(245, 158, 11, 0.14);
+        border: 1px solid rgba(245, 158, 11, 0.45);
+        color: #FCD34D;
+        font-size: 10.5px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        padding: 2px 10px;
+        border-radius: 999px;
+        margin-top: 6px;
+    }
+    .match-goals-inline {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) var(--hdr-mid-w) minmax(0, 1fr);
+        align-items: start;
+        gap: 16px;
+        padding: 10px 0 4px;
+        margin-top: 2px;
+        border-top: 1px solid rgba(148, 163, 184, 0.10);
+        font-size: 12.5px;
+        color: #CBD5E1;
+    }
+    .goals-col-home { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 0; }
+    .goals-col-away { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+    .goal-item { display: inline-flex; align-items: center; gap: 6px; line-height: 1.35; }
+    .goals-col-home .goal-item { justify-content: flex-end; text-align: right; }
+    .goals-col-away .goal-item { justify-content: flex-start; text-align: left; }
+    .goal-player-name { color: #E2E8F0; font-weight: 600; }
+    .goal-min-tag { color: #94A3B8; font-weight: 700; font-size: 11.5px; font-variant-numeric: tabular-nums; min-width: 30px; display: inline-block; }
+    .goals-col-home .goal-min-tag { text-align: right; }
+    .goals-col-away .goal-min-tag { text-align: left; }
+    .goals-col-mid { display: flex; align-items: center; justify-content: center; align-self: stretch; color: #64748B; }
+    .goals-mid-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.78);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        font-size: 12.5px;
+        line-height: 1;
+    }
+    .match-footer-meta {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+        padding-top: 9px;
+        border-top: 1px solid rgba(148, 163, 184, 0.09);
+        font-size: 12px;
+        color: #94A3B8;
+    }
 
-    /* FotMob / SofaScore Pro Pill Tabs */
-    [data-baseweb="tab-list"] {
-        background: #121926 !important;
-        border: 1px solid #26354D !important;
-        border-radius: 14px !important;
-        padding: 6px 8px !important;
-        gap: 8px !important;
-        margin-bottom: 18px !important;
+    /* Section Header & Surfaces */
+    .section-hdr {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 0.25rem 0 0.75rem;
+        padding-bottom: 0.45rem;
+        border-bottom: 1px solid var(--border-subtle);
     }
-    [data-baseweb="tab"] {
-        border-radius: 10px !important;
-        padding: 10px 18px !important;
-        font-weight: 800 !important;
-        font-size: 14px !important;
-        color: #94A3B8 !important;
-        background: transparent !important;
-        border: none !important;
-        transition: all 0.18s ease !important;
+    .section-hdr-title {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        font-size: 14.5px;
+        font-weight: 800;
+        color: #F1F5F9;
+        letter-spacing: -0.01em;
     }
-    [data-baseweb="tab"]:hover {
-        color: #F8FAFC !important;
-        background: rgba(56, 189, 248, 0.10) !important;
-    }
-    [data-baseweb="tab"][aria-selected="true"] {
-        background: linear-gradient(135deg, #0284C7 0%, #2563EB 100%) !important;
-        color: #FFFFFF !important;
-        box-shadow: 0 4px 14px rgba(37, 99, 235, 0.38) !important;
-    }
-    [data-baseweb="tab-highlight"], [data-baseweb="tab-border"] {
-        display: none !important;
+    .section-hdr-sub {
+        font-size: 11.5px;
+        color: #64748B;
+        font-weight: 600;
     }
 
-    @media (max-width: 640px) {
-        .match-header-card { padding: 18px 14px; }
-        .match-top-meta { grid-template-columns: 1fr; text-align: center; gap: 6px; }
-        .match-score-row { gap: 10px; }
-        .match-team-name { font-size: clamp(17px, 4.8vw, 22px); }
-        .score-badge { min-width: 124px; padding: 10px 14px; }
-        .score-numbers { font-size: 30px; gap: 8px; }
-        .match-goal-lists { grid-template-columns: minmax(0, 1fr); gap: 10px; }
-    }
-
-    /* Player Cards & Sidebar Styling */
+    /* Player Cards & Stat Boxes */
     .player-card {
-        background-color: #141B27;
+        background-color: var(--bg-surface);
         border-radius: 12px;
         padding: 14px;
-        border: 1px solid #232E42;
+        border: 1px solid var(--border-subtle);
         text-align: center;
-        transition: transform 0.2s;
+        transition: all 0.18s ease;
         margin-bottom: 12px;
     }
     .player-card:hover {
-        transform: translateY(-3px);
-        border-color: #2C66FF;
+        transform: translateY(-2px);
+        border-color: var(--border-accent);
+    }
+    .sofa-stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 4px; }
+    .sofa-impact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 16px; }
+    .sofa-gk-strip { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 4px; }
+    .sofa-stat-box { background: #0C121E; border-radius: 10px; padding: 10px 12px; border: 1px solid var(--border-subtle); margin: 0; }
+    .sofa-stat-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4.5px 0; border-bottom: 1px solid rgba(148, 163, 184, 0.08); font-size: 12.5px; }
+    .sofa-stat-row:last-child { border-bottom: none; padding-bottom: 1px; }
+    .stat-name { color: #94A3B8; font-weight: 500; line-height: 1.25; }
+    .stat-val { color: #FFFFFF; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+    /* Consistent KPI Metrics & Containers */
+    [data-testid="stMetric"] {
+        min-height: 78px;
+        padding: 10px 13px !important;
+        border: 1px solid var(--border-subtle) !important;
+        border-radius: 11px !important;
+        background: #101725 !important;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16) !important;
+        transition: border-color 140ms ease !important;
+    }
+    [data-testid="stMetric"]:hover { border-color: var(--border-accent) !important; }
+    [data-testid="stMetricLabel"] p { color: #94A3B8 !important; font-size: 0.74rem !important; font-weight: 600 !important; }
+    [data-testid="stMetricValue"] { color: #F8FAFC !important; font-weight: 800 !important; font-size: 1.35rem !important; }
+    [data-testid="stMetricDelta"] { font-size: 0.74rem !important; }
+
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        border: 1px solid var(--border-subtle) !important;
+        border-radius: 13px !important;
+        background: rgba(16, 23, 37, 0.88) !important;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16) !important;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"] > div { border-radius: inherit; }
+    [data-testid="stPlotlyChart"] { border-radius: 10px; }
+
+    /* Real-Time Daily Match Cards (Desktop + Mobile Responsive) */
+    .dm-card {
+        display: grid;
+        grid-template-columns: 118px minmax(0, 1fr) 232px 14px;
+        align-items: center;
+        gap: 12px;
+        background: linear-gradient(135deg, #111827 0%, #0D1320 100%);
+        border-radius: 10px;
+        padding: 8px 13px;
+        min-height: 46px;
+    }
+    .dm-card.dm-clickable {
+        cursor: pointer;
+        transition: transform 0.14s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+        user-select: none;
+    }
+    .dm-card.dm-clickable:hover {
+        background: linear-gradient(135deg, #162238 0%, #101A2E 100%) !important;
+        box-shadow: 0 4px 16px rgba(56, 189, 248, 0.18);
+        transform: translateY(-1px);
+    }
+    .dm-card.dm-clickable:focus-visible {
+        outline: 2px solid #38BDF8;
+        outline-offset: 2px;
+    }
+    .dm-card.dm-clickable:active,
+    .dm-card.dm-clickable.dm-pressing {
+        transform: scale(0.992);
+        box-shadow: 0 2px 8px rgba(56, 189, 248, 0.28);
+    }
+    .dm-chevron {
+        color: #64748B;
+        font-size: 17px;
+        font-weight: 800;
+        line-height: 1;
+        text-align: right;
+        transition: color 0.15s ease, transform 0.15s ease;
+    }
+    .dm-card.dm-clickable:hover .dm-chevron {
+        color: #38BDF8;
+        transform: translateX(2px);
+    }
+    .dm-time { display: flex; flex-direction: column; gap: 2px; }
+    .dm-time-pill { font-size: 11px; font-weight: 800; padding: 1.5px 7px; border-radius: 6px; text-align: center; white-space: nowrap; }
+    .dm-time-sub { color: #64748B; font-size: 10px; font-weight: 600; text-align: center; white-space: nowrap; }
+    .dm-match { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; min-width: 0; }
+    .dm-team { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    .dm-team.home { justify-content: flex-end; }
+    .dm-team.away { justify-content: flex-start; }
+    .dm-team-txt { color: #F8FAFC; font-weight: 700; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dm-team.home .dm-team-txt { text-align: right; }
+    .dm-team.away .dm-team-txt { text-align: left; }
+    .dm-chips { font-size: 10.8px; font-weight: 600; white-space: nowrap; text-align: right; overflow: hidden; text-overflow: ellipsis; }
+
+    @media (max-width: 1120px) {
+        .dm-card { grid-template-columns: 110px minmax(0, 1fr) auto 14px; }
     }
 
-    /* SofaScore Player Match Detail Modal/Card */
-    .sofa-stat-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
-        margin-top: 4px;
+    /* Interactive Week Slider Header & Inline Live Match Viewer */
+    .wk-bar-hdr {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 6px 12px;
+        margin: 6px 0 4px;
+        padding: 6px 12px;
+        border-radius: 9px;
+        background: rgba(15, 23, 42, 0.72);
+        border: 1px solid rgba(56, 189, 248, 0.22);
+        font-size: 12.5px;
+        font-weight: 700;
+        color: #E2E8F0;
     }
-    .sofa-impact-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 6px 16px;
+    .lv-hero {
+        --lv-mid-w: 108px;
+        background: radial-gradient(circle at 50% -15%, rgba(239, 68, 68, 0.14), #0D1422 72%);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 12px;
+        padding: 12px 16px;
+        margin-bottom: 10px;
     }
-    .sofa-gk-strip {
-        grid-column: 1 / -1;
+    .lv-hero-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 6px 12px;
+        margin-bottom: 10px;
+    }
+    .lv-score-grid {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: minmax(0, 1fr) var(--lv-mid-w) minmax(0, 1fr);
+        align-items: center;
+        gap: 14px;
+    }
+    .lv-team-box { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .lv-team-box.home { justify-content: flex-end; text-align: right; }
+    .lv-team-box.away { justify-content: flex-start; text-align: left; }
+    .lv-team-name { color: #F8FAFC; font-weight: 800; font-size: 16.5px; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lv-score-pill {
+        font-size: 26px;
+        font-weight: 900;
+        font-variant-numeric: tabular-nums;
+        background: #090D16;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        padding: 5px 12px;
+        border-radius: 10px;
+        width: 100%;
+        min-width: 0;
+        text-align: center;
+    }
+    .lv-ev-summary {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) var(--lv-mid-w) minmax(0, 1fr);
+        align-items: start;
+        gap: 14px;
+        margin-top: 9px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(148, 163, 184, 0.12);
+        font-size: 11.5px;
+        line-height: 1.45;
+    }
+    .lv-stat-row { margin-bottom: 7px; }
+    .lv-stat-top { display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-bottom: 3px; }
+    .lv-stat-bar-wrap { display: flex; gap: 2px; height: 7px; border-radius: 4px; overflow: hidden; background: rgba(15, 23, 42, 0.9); }
+    .lv-comm-feed { max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; padding-right: 4px; }
+    .lv-evt-item {
+        display: flex;
+        align-items: flex-start;
         gap: 8px;
-        margin-top: 4px;
+        padding: 6px 9px;
+        border-radius: 8px;
+        background: rgba(15, 23, 42, 0.65);
+        border: 1px solid rgba(148, 163, 184, 0.12);
+        font-size: 12px;
+        color: #E2E8F0;
+        line-height: 1.38;
     }
-    @media (max-width: 720px) {
-        .sofa-stat-grid, .sofa-impact-grid { grid-template-columns: minmax(0, 1fr); }
-        .sofa-gk-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .lv-evt-clk {
+        flex: none;
+        min-width: 38px;
+        text-align: center;
+        font-weight: 800;
+        font-size: 11px;
+        color: #7DD3FC;
+        background: rgba(56, 189, 248, 0.12);
+        border: 1px solid rgba(56, 189, 248, 0.28);
+        border-radius: 5px;
+        padding: 1px 5px;
     }
-    .sofa-stat-box {
-        background: #0E131E;
-        border-radius: 11px;
-        padding: 10px 12px;
-        border: 1px solid #1C2536;
-        margin: 0;
-    }
-    .sofa-stat-row {
+    .lv-roster-row {
         display: flex;
         justify-content: space-between;
         align-items: center;
         gap: 8px;
-        padding: 4.5px 0;
-        border-bottom: 1px solid #18202E;
-        font-size: 12.5px;
-    }
-    .sofa-stat-row:last-child {
-        border-bottom: none;
-        padding-bottom: 1px;
-    }
-    .stat-name {
-        color: #94A3B8;
-        font-weight: 500;
-        line-height: 1.25;
-    }
-    .stat-val {
-        color: #FFFFFF;
-        font-weight: 800;
-        white-space: nowrap;
-        font-variant-numeric: tabular-nums;
+        padding: 4px 8px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+        font-size: 12px;
+        color: #E2E8F0;
     }
 
-    /* Dashboard polish: match the pitch and chart surfaces */
-    :root {
-        color-scheme: dark;
-        --dashboard-bg: #0D100E;
-        --dashboard-surface: #131A26;
-        --dashboard-border: #273448;
-        --dashboard-muted: #9AA9BE;
-    }
-    .stApp, [data-testid="stAppViewContainer"] {
-        background-color: var(--dashboard-bg);
-    }
-    [data-testid="stMainBlockContainer"], .main .block-container {
-        padding-top: 2.6rem !important;
-        padding-bottom: 2rem !important;
-    }
-    [data-testid="stHeader"] {
-        background: transparent !important;
-        pointer-events: none;
-    }
-    [data-testid="stHeader"] button,
-    [data-testid="stToolbar"],
-    [data-testid="stExpandSidebarButton"],
-    [data-testid="collapsedControl"] {
-        pointer-events: auto;
-    }
-    [data-testid="stAppDeployButton"] {
-        display: none !important;
-    }
-
-    /* Consistent KPI cards */
-    [data-testid="stMetric"] {
-        min-height: 98px;
-        padding: 14px 16px !important;
-        border: 1px solid var(--dashboard-border) !important;
-        border-radius: 14px !important;
-        background: linear-gradient(145deg, #172131 0%, var(--dashboard-surface) 68%, #111711 100%);
-        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.20);
-        transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
-    }
-    [data-testid="stMetric"]:hover {
-        border-color: #3567B8 !important;
-        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
-        transform: translateY(-2px);
-    }
-    [data-testid="stMetricLabel"] p {
-        color: var(--dashboard-muted) !important;
-        font-size: 0.78rem !important;
-        font-weight: 700 !important;
-        letter-spacing: 0.02em;
-    }
-    [data-testid="stMetricValue"] {
-        color: #F4F7FB !important;
-        font-weight: 800 !important;
-    }
-    [data-testid="stMetricDelta"] {
-        font-size: 0.78rem !important;
-    }
-
-    /* Rounded, layered surfaces for bordered containers and charts */
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        border: 1px solid var(--dashboard-border) !important;
-        border-radius: 16px !important;
-        background: linear-gradient(150deg, rgba(19, 26, 38, 0.94), rgba(13, 16, 14, 0.96));
-        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
-    }
-    [data-testid="stVerticalBlockBorderWrapper"] > div {
-        border-radius: inherit;
-    }
-    [data-testid="stPlotlyChart"] {
-        border-radius: 12px;
-    }
-
-    /* Compact, readable global filters & Wide Non-Clipping Match Selector */
-    [data-testid="stSidebar"] {
-        background: #10151E;
-        border-right: 1px solid #202B3B;
-    }
-    @media (min-width: 992px) {
-        [data-testid="stSidebar"] {
-            min-width: 320px !important;
-            width: 320px !important;
-        }
-    }
-    [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {
-        color: #AAB7C9 !important;
-        font-size: 0.78rem !important;
-        font-weight: 700 !important;
-    }
-    [data-testid="stSidebar"] [data-testid="stSelectbox"] {
-        margin: 0.12rem 0 0.48rem;
-    }
-    [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div {
-        font-size: 12.8px !important;
-        padding-left: 9px !important;
-        padding-right: 6px !important;
-    }
-    [data-testid="stSidebar"] [data-testid="stSelectbox"] [role="combobox"],
-    [data-testid="stSelectbox"] [role="combobox"] {
-        border-radius: 10px !important;
-        border-color: #2A374B !important;
-        background-color: #131A26 !important;
-    }
-    /* Mở rộng menu xổ xuống để hiển thị trọn vẹn Tên 2 Đội + Tỷ Số + Ngày */
-    div[data-baseweb="popover"]:has(ul[role="listbox"]),
-    div[data-baseweb="popover"]:has([data-testid="stVirtualDropdown"]) {
-        min-width: 375px !important;
-        max-width: min(500px, 94vw) !important;
-    }
-    ul[role="listbox"] li[role="option"],
-    [data-testid="stVirtualDropdown"] li[role="option"] {
-        font-size: 13px !important;
-        padding-left: 10px !important;
-        padding-right: 10px !important;
-    }
-    [data-testid="stSidebar"] [data-testid="stExpander"] {
-        border: 1px solid #263348;
-        border-radius: 12px;
-        background: rgba(19, 26, 38, 0.62);
-    }
-    .sidebar-filter-title {
-        margin: 0 0 0.65rem;
-        padding: 0 0 0.7rem;
-        border-bottom: 1px solid #263348;
-        color: #DCE6F5;
-        font-size: 0.82rem;
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-    }
-    .sidebar-filter-subtitle {
-        margin: 0.5rem 0 0.1rem;
-        color: #8798B0;
-        font-size: 0.72rem;
-        font-weight: 800;
-        letter-spacing: 0.07em;
-        text-transform: uppercase;
-    }
-
-    /* Tighten dashboard spacing on narrow screens */
     @media (max-width: 768px) {
         [data-testid="stMainBlockContainer"], .main .block-container {
-            padding-left: 1rem !important;
-            padding-right: 1rem !important;
+            padding-top: 2.35rem !important;
+            padding-left: 1.0rem !important;
+            padding-right: 1.0rem !important;
         }
-        [data-testid="stMetric"] {
-            min-height: 86px;
-            padding: 11px 12px !important;
-        }
+        .match-header-card { --hdr-mid-w: 106px; padding: 11px 12px 9px; border-radius: 12px; }
+        .match-top-meta { display: flex; flex-direction: column; align-items: center; gap: 5px; text-align: center; font-size: 10.8px; }
+        .match-top-meta > :first-child, .match-top-meta > :last-child { text-align: center; justify-self: center; }
+        .match-score-row, .match-goals-inline { gap: 8px; }
+        .match-score-row { margin: 8px 0 6px; }
+        .match-team-name { font-size: 15px !important; gap: 6px !important; }
+        .match-team-name img, .match-team-name svg { width: 30px !important; height: 30px !important; }
+        .team-sub-stats { font-size: 10px; gap: 4px; }
+        .team-sub-chip { padding: 1.5px 5px; }
+        .score-center-box { padding: 6px 8px; border-radius: 10px; }
+        .score-numbers { font-size: 24px; gap: 5px; }
+        .score-vs-text { font-size: 19px; letter-spacing: 0.09em; }
+        .score-sub-note { font-size: 9px; white-space: normal; line-height: 1.2; }
+        .score-sep { font-size: 18px; }
+        .match-goals-inline { font-size: 11px; padding: 7px 0 2px; }
+        .goal-min-tag { min-width: 24px; font-size: 10.5px; }
+        .goals-mid-badge { width: 22px; height: 22px; font-size: 11px; }
+        .match-footer-meta { font-size: 10.8px; }
+        .sofa-stat-grid, .sofa-impact-grid { grid-template-columns: minmax(0, 1fr); }
+        .sofa-gk-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        div[data-testid="stTabs"] button[role="tab"] { padding: 6px 10px !important; font-size: 12px !important; }
+        .dm-card { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 8px 10px; }
+        .dm-time { flex-direction: row; justify-content: space-between; align-items: center; }
+        .dm-team-txt { font-size: 12.5px; }
+        .dm-chips { text-align: center; white-space: normal; font-size: 10.5px; }
+        .dm-chevron { display: none; }
+        .lv-hero { --lv-mid-w: 76px; padding: 9px 10px; }
+        .lv-score-grid, .lv-ev-summary { gap: 6px; }
+        .lv-team-name { font-size: 13.5px; white-space: normal; }
+        .lv-score-pill { font-size: 20px; padding: 4px 6px; }
+        .lv-ev-summary { font-size: 10.5px; }
     }
-
 </style>
 """, unsafe_allow_html=True)
 
@@ -548,6 +893,66 @@ def _get_team_colors(team_name):
     g = (h >> 8) & 0xFF
     b = h & 0xFF
     return (f"#{r:02x}{g:02x}{b:02x}", "#FFFFFF")
+
+
+_TEAM_ABBR_MAP = {
+    "spain": "ESP", "argentina": "ARG", "france": "FRA", "england": "ENG",
+    "brazil": "BRA", "germany": "GER", "portugal": "POR", "netherlands": "NED",
+    "italy": "ITA", "croatia": "CRO", "belgium": "BEL", "uruguay": "URU",
+    "colombia": "COL", "morocco": "MAR", "japan": "JPN", "south korea": "KOR",
+    "united states": "USA", "mexico": "MEX", "switzerland": "SUI", "senegal": "SEN",
+    "manchester city": "MCI", "manchester united": "MUN", "arsenal": "ARS",
+    "liverpool": "LIV", "chelsea": "CHE", "tottenham": "TOT", "tottenham hotspur": "TOT",
+    "newcastle united": "NEW", "aston villa": "AVL", "real madrid": "RMA",
+    "barcelona": "BAR", "atlético madrid": "ATM", "bayern munich": "BAY",
+    "borussia dortmund": "BVB", "bayer leverkusen": "B04", "rb leipzig": "RBL",
+    "inter milan": "INT", "ac milan": "ACM", "juventus": "JUV", "napoli": "NAP",
+    "psg": "PSG", "paris saint-germain": "PSG", "marseille": "OM", "lyon": "OL",
+}
+
+
+def _make_team_crest_svg(team_name: str, size: int = 44, logo_url: str = "") -> str:
+    """Hiển thị logo CLB/Đội tuyển chuẩn HD từ ESPN (kèm fallback khiên SVG màu áo)."""
+    t_clean = str(team_name or "FC").strip()
+    abbr = _TEAM_ABBR_MAP.get(t_clean.lower())
+    if not abbr:
+        parts = [w for w in t_clean.replace("-", " ").split() if w.upper() not in ("FC", "CF", "AC", "SC", "AFC", "AS", "SS", "US", "RB")]
+        if len(parts) >= 2:
+            abbr = (parts[0][0] + parts[1][:2]).upper()
+        elif parts:
+            abbr = parts[0][:3].upper()
+        else:
+            abbr = t_clean[:3].upper()
+    primary, secondary = _get_team_colors(t_clean)
+    # Bảo đảm chữ luôn tương phản rõ trên nền màu chính
+    p_hex = primary.lstrip("#")
+    try:
+        lum = 0.299 * int(p_hex[0:2], 16) + 0.587 * int(p_hex[2:4], 16) + 0.114 * int(p_hex[4:6], 16)
+    except Exception:
+        lum = 80
+    txt_col = "#0B1120" if lum > 175 else "#FFFFFF"
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 48 48">'
+        f'<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
+        f'<stop offset="0%" stop-color="{primary}"/><stop offset="100%" stop-color="{primary}" stop-opacity="0.78"/></linearGradient></defs>'
+        f'<path d="M24 3 L41 9.5 V23 C41 34.5 33.4 41.8 24 45 C14.6 41.8 7 34.5 7 23 V9.5 Z" '
+        f'fill="url(#g)" stroke="{secondary}" stroke-width="2.4" stroke-linejoin="round"/>'
+        f'<path d="M24 6 L38 11.4 V22.5 C38 32.1 31.6 38.4 24 41.3" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1.2"/>'
+        f'<text x="24" y="27.5" text-anchor="middle" fill="{txt_col}" '
+        f'font-family="Inter,Arial,sans-serif" font-weight="900" font-size="12.5" letter-spacing="0.4">{html.escape(abbr)}</text>'
+        f'</svg>'
+    )
+    b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    fallback_uri = f"data:image/svg+xml;base64,{b64}"
+    resolved_url = get_team_logo_url(t_clean, fallback_url=logo_url)
+    if resolved_url:
+        return (
+            f'<img src="{html.escape(resolved_url, quote=True)}" width="{size}" height="{size}" '
+            f'style="width:{size}px;height:{size}px;object-fit:contain;flex-shrink:0;'
+            f'filter:drop-shadow(0 3px 8px rgba(0,0,0,0.42));" alt="{html.escape(t_clean)}" '
+            f'onerror="this.onerror=null;this.src=\'{fallback_uri}\';">'
+        )
+    return f'<img src="{fallback_uri}" width="{size}" height="{size}" style="flex-shrink:0;filter:drop-shadow(0 3px 8px rgba(0,0,0,0.4));" alt="{html.escape(t_clean)}">'
 
 # Tên rút gọn theo cách gọi quen thuộc trên bảng tỷ số và đội hình.
 _PLAYER_DISPLAY_ALIASES = {
@@ -797,6 +1202,7 @@ def _player_display_name(name, pitch=False):
     return full_name
 
 
+@st.cache_data(show_spinner=False, max_entries=512)
 def _make_jersey_svg(initials, primary_color, secondary_color, size=80):
     s = size
     svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{s}" height="{s}" viewBox="0 0 80 80">
@@ -834,6 +1240,7 @@ def _photo_name_key(name):
     """Create a stable accent- and punctuation-insensitive key for photo lookup."""
     return "".join(ch for ch in _norm_name(name) if ch.isalnum())
 
+@st.cache_resource(show_spinner=False)
 def _load_photo_indices():
     idx = {}
     if os.path.exists(_PHOTO_INDEX_PATH):
@@ -855,11 +1262,18 @@ def _load_photo_indices():
                     file_idx.setdefault(_photo_key, _photo_file)
     return idx, idx_norm, idx_key, file_idx
 
-_PHOTO_INDEX, _PHOTO_INDEX_NORM, _PHOTO_INDEX_KEY, _PHOTO_FILE_INDEX = _load_photo_indices()
-
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=1024)
 def _load_photo_b64(fpath):
+    """Tối ưu ảnh đại diện về thumbnail 96x96 WebP (~2KB thay vì 17-215KB) giúp tải cực nhanh qua Internet."""
     try:
+        if _PILImage is not None:
+            with _PILImage.open(fpath) as im:
+                if im.mode not in ("RGB", "RGBA"):
+                    im = im.convert("RGB")
+                im.thumbnail((96, 96), _PILImage.Resampling.LANCZOS)
+                buf = io.BytesIO()
+                im.save(buf, format="WEBP", quality=76, method=4)
+                return f"data:image/webp;base64,{base64.b64encode(buf.getvalue()).decode()}"
         with open(fpath, "rb") as f:
             raw = f.read()
         ext = os.path.splitext(fpath)[1].lower().lstrip(".")
@@ -869,32 +1283,17 @@ def _load_photo_b64(fpath):
     except Exception:
         return None
 
+@st.cache_data(show_spinner=False, max_entries=4096)
 def get_player_avatar(p_name, is_home, team_name=""):
-    global _PHOTO_INDEX, _PHOTO_INDEX_NORM, _PHOTO_INDEX_KEY, _PHOTO_FILE_INDEX
     if not p_name:
         p_name = "Unknown"
-    photo_key = _photo_name_key(p_name)
-    fname = (
-        _PHOTO_INDEX.get(p_name)
-        or _PHOTO_INDEX_NORM.get(_norm_name(p_name))
-        or _PHOTO_INDEX_KEY.get(photo_key)
-        or _PHOTO_FILE_INDEX.get(photo_key)
-    )
-    if not fname:
-        _PHOTO_INDEX, _PHOTO_INDEX_NORM, _PHOTO_INDEX_KEY, _PHOTO_FILE_INDEX = _load_photo_indices()
-        fname = (
-            _PHOTO_INDEX.get(p_name)
-            or _PHOTO_INDEX_NORM.get(_norm_name(p_name))
-            or _PHOTO_INDEX_KEY.get(photo_key)
-            or _PHOTO_FILE_INDEX.get(photo_key)
-        )
-    if fname:
-        fpath = fname if os.path.isabs(fname) else os.path.join(_PHOTO_DIR, os.path.basename(fname))
-        if os.path.exists(fpath):
-            b64 = _load_photo_b64(fpath)
-            if b64:
-                return b64
 
+    # Priority 1-4: Real circular studio WebP portrait (EA FC 16k+ -> FotMob -> Legacy archive -> Wikipedia)
+    real_uri = get_player_avatar_b64(p_name, team_name=team_name, allow_network=True)
+    if real_uri:
+        return real_uri
+
+    # Priority 5: Broadcast athlete bust silhouette in club colors (never flat empty circle)
     parts = p_name.split()
     if len(parts) >= 2:
         initials = (parts[0][0] + parts[-1][0]).upper()
@@ -902,11 +1301,11 @@ def get_player_avatar(p_name, is_home, team_name=""):
         initials = parts[0][:2].upper()
     else:
         initials = "FB"
-    
+
     pri, sec = _get_team_colors(team_name) if team_name else (
         ("#1a6edb", "#FFFFFF") if is_home else ("#cc2255", "#FFFFFF")
     )
-    return _make_jersey_svg(initials, pri, sec)
+    return make_broadcast_bust_svg(initials, pri, sec)
 
 
 # ==========================================================
@@ -1005,7 +1404,9 @@ def _pass_summary(pass_events):
     if xt_val is None and {'location_x', 'location_y', 'pass_end_location_x', 'pass_end_location_y'}.issubset(pass_events.columns):
         start_xt = _estimate_zone_xt(pass_events['location_x'], pass_events['location_y'])
         end_xt = _estimate_zone_xt(pass_events['pass_end_location_x'], pass_events['pass_end_location_y'])
-        d_xt = (end_xt - start_xt).where(success_mask if success_mask is not None else True, 0.0)
+        d_xt = end_xt - start_xt
+        if success_mask is not None:
+            d_xt = d_xt.where(success_mask, 0.0)
         if d_xt.notna().any():
             xt_val = float(d_xt.fillna(0.0).sum())
 
@@ -1036,6 +1437,28 @@ def _display_decimal(value, digits=2, signed=False):
     if value is None or pd.isna(value):
         return "Chưa có"
     return f"{value:+.{digits}f}" if signed else f"{value:.{digits}f}"
+
+def _event_clock(values):
+    """Elapsed minutes for ordering; original football clock for display."""
+    clock = values.astype('string').str.strip().str.rstrip("'′")
+    parts = clock.str.extract(r'^(\d+)(?:\.0+)?(?:\s*\+\s*(\d+))?$')
+    elapsed = pd.to_numeric(parts[0]) + pd.to_numeric(parts[1]).fillna(0)
+    label = parts[0].fillna('—') + ('+' + parts[1]).fillna('')
+    return elapsed, label
+
+
+def _safe_minute_int(val, default: int = 0) -> int:
+    if pd.isna(val) or val == "":
+        return default
+    if isinstance(val, (int, float)):
+        return default if pd.isna(val) else int(val)
+    s = str(val).replace("′", "").replace("'", "").strip().split("+")[0].strip()
+    try:
+        return int(float(s))
+    except Exception:
+        digits = "".join(ch for ch in s if ch.isdigit())
+        return int(digits) if digits else default
+
 
 def _format_stat_val(data, column, digits=0, suffix=""):
     if data is None:
@@ -1178,9 +1601,7 @@ def render_sofascore_player_panel(player_data, p_events, current_match, max_rati
     is_home = (team_name == current_match.get('home_team', ''))
 
     # 1. Số phút thi đấu chính xác (tính cả hiệp phụ 120' và thời điểm thay người vào/ra)
-    has_et = False
-    if match_events is not None and not match_events.empty and 'period' in match_events.columns:
-        has_et = bool(pd.to_numeric(match_events['period'], errors='coerce').isin([3, 4]).any())
+    has_et = _has_extra_time(match_events)
     full_match_mins = 120 if has_et else 90
 
     min_in = 0
@@ -1466,7 +1887,7 @@ def render_sofascore_player_panel(player_data, p_events, current_match, max_rati
         if tot_shots > 0:
             pills = []
             for _, r in p_shots.iterrows():
-                m = int(pd.to_numeric(r.get('minute', 0), errors='coerce') or 0)
+                m = r.get('minute_display', _safe_minute_int(r.get('minute'), '—'))
                 out = str(r.get('shot_outcome_name', '') or '')
                 ic = "⚽" if out == "Goal" else ("🧤" if out in ["Saved", "Saved to Post"] else ("🛡️" if out == "Blocked" else "❌"))
                 pills.append(f'<span style="background: #1E293B; border: 1px solid #334155; padding: 3px 9px; border-radius: 14px; font-size: 11.5px; font-weight: 700; color: #FFFFFF;">{m}\' {ic}</span>')
@@ -1498,7 +1919,7 @@ def render_sofascore_player_panel(player_data, p_events, current_match, max_rati
                     if s_type.lower() == "nan": s_type = "Open Play"
                     s_body = str(r.get("shot_body_part_name") or "Foot")
                     if s_body.lower() == "nan": s_body = "Foot"
-                    m_val = int(pd.to_numeric(r.get("minute", 0), errors="coerce") or 0)
+                    m_val = r.get('minute_display', _safe_minute_int(r.get('minute'), '—'))
                     fig_mini.add_trace(go.Scatter(
                         x=[sx_f], y=[sy_f], mode="markers",
                         marker=dict(size=sz, color=col, symbol=sym, line=dict(color="#FFFFFF", width=1.5)),
@@ -1524,7 +1945,7 @@ def render_sofascore_player_panel(player_data, p_events, current_match, max_rati
                 if s_type.lower() == "nan": s_type = "Open Play"
                 s_body = str(r.get("shot_body_part_name") or "Foot")
                 if s_body.lower() == "nan": s_body = "Foot"
-                m_val = int(pd.to_numeric(r.get("minute", 0), errors="coerce") or 0)
+                m_val = r.get('minute_display', _safe_minute_int(r.get('minute'), '—'))
                 shot_items_html.append(
                     f'<div style="background: #131A26; border-radius: 8px; padding: 8px 12px; border: 1px solid #1E2638; display: flex; justify-content: space-between; align-items: center;">'
                     f'<div><span style="font-weight: 800; color: #FFFFFF; font-size: 13px;">Phút {m_val}\'</span>'
@@ -1607,58 +2028,58 @@ def render_sofascore_player_panel(player_data, p_events, current_match, max_rati
 # ==========================================================
 POSITION_COORDS = {
     "home": {
-        "Goalkeeper": (8, 40), "GK": (8, 40),
-        "Right Back": (23, 15), "RB": (23, 15),
-        "Right Wing Back": (29, 15), "RWB": (29, 15),
-        "Right Center Back": (20, 28), "RCB": (20, 28),
-        "Center Back": (19, 40), "CB": (19, 40),
-        "Left Center Back": (20, 52), "LCB": (20, 52),
-        "Left Back": (23, 63), "LB": (23, 63),
-        "Left Wing Back": (29, 63), "LWB": (29, 63),
-        "Right Defensive Midfield": (33, 27), "RDM": (33, 27),
-        "Center Defensive Midfield": (32, 40), "CDM": (32, 40), "DM": (32, 40),
-        "Left Defensive Midfield": (33, 53), "LDM": (33, 53),
-        "Right Midfield": (42, 15), "RM": (42, 15),
-        "Right Center Midfield": (41, 28), "RCM": (41, 28),
-        "Center Midfield": (40, 40), "CM": (40, 40),
-        "Left Center Midfield": (41, 52), "LCM": (41, 52),
-        "Left Midfield": (42, 63), "LM": (42, 63),
-        "Right Attacking Midfield": (47, 25), "RAM": (47, 25),
-        "Center Attacking Midfield": (47, 40), "CAM": (47, 40), "AM": (47, 40),
-        "Left Attacking Midfield": (47, 55), "LAM": (47, 55),
-        "Right Wing": (52, 16), "RW": (52, 16),
-        "Left Wing": (52, 62), "LW": (52, 62),
-        "Second Striker": (50, 40), "Secondary Striker": (50, 40), "SS": (50, 40),
-        "Right Center Forward": (54, 29), "RCF": (54, 29),
-        "Center Forward": (55, 40), "CF": (55, 40), "ST": (55, 40),
-        "Left Center Forward": (54, 51), "LCF": (54, 51),
+        "Goalkeeper": (7, 40), "GK": (7, 40),
+        "Right Back": (20.5, 11.5), "RB": (20.5, 11.5),
+        "Right Wing Back": (26.5, 12.5), "RWB": (26.5, 12.5),
+        "Right Center Back": (18.5, 30.5), "RCB": (18.5, 30.5),
+        "Center Back": (17.5, 40), "CB": (17.5, 40),
+        "Left Center Back": (18.5, 49.5), "LCB": (18.5, 49.5),
+        "Left Back": (20.5, 68.5), "LB": (20.5, 68.5),
+        "Left Wing Back": (26.5, 67.5), "LWB": (26.5, 67.5),
+        "Right Defensive Midfield": (30.5, 26), "RDM": (30.5, 26),
+        "Center Defensive Midfield": (29.5, 40), "CDM": (29.5, 40), "DM": (29.5, 40),
+        "Left Defensive Midfield": (30.5, 54), "LDM": (30.5, 54),
+        "Right Midfield": (38, 11.5), "RM": (38, 11.5),
+        "Right Center Midfield": (38, 30.5), "RCM": (38, 30.5),
+        "Center Midfield": (37, 40), "CM": (37, 40),
+        "Left Center Midfield": (38, 49.5), "LCM": (38, 49.5),
+        "Left Midfield": (38, 68.5), "LM": (38, 68.5),
+        "Right Attacking Midfield": (42.5, 22), "RAM": (42.5, 22),
+        "Center Attacking Midfield": (41.5, 40), "CAM": (41.5, 40), "AM": (41.5, 40),
+        "Left Attacking Midfield": (42.5, 58), "LAM": (42.5, 58),
+        "Right Wing": (48.5, 14), "RW": (48.5, 14),
+        "Left Wing": (48.5, 66), "LW": (48.5, 66),
+        "Second Striker": (47.5, 40), "Secondary Striker": (47.5, 40), "SS": (47.5, 40),
+        "Right Center Forward": (52, 26), "RCF": (52, 26),
+        "Center Forward": (52, 40), "CF": (52, 40), "ST": (52, 40),
+        "Left Center Forward": (52, 54), "LCF": (52, 54),
     },
     "away": {
-        "Goalkeeper": (112, 40), "GK": (112, 40),
-        "Right Back": (97, 15), "RB": (97, 15),
-        "Right Wing Back": (91, 15), "RWB": (91, 15),
-        "Right Center Back": (100, 28), "RCB": (100, 28),
-        "Center Back": (101, 40), "CB": (101, 40),
-        "Left Center Back": (100, 52), "LCB": (100, 52),
-        "Left Back": (97, 63), "LB": (97, 63),
-        "Left Wing Back": (91, 63), "LWB": (91, 63),
-        "Right Defensive Midfield": (87, 27), "RDM": (87, 27),
-        "Center Defensive Midfield": (88, 40), "CDM": (88, 40), "DM": (88, 40),
-        "Left Defensive Midfield": (87, 53), "LDM": (87, 53),
-        "Right Midfield": (78, 15), "RM": (78, 15),
-        "Right Center Midfield": (79, 28), "RCM": (79, 28),
-        "Center Midfield": (80, 40), "CM": (80, 40),
-        "Left Center Midfield": (79, 52), "LCM": (79, 52),
-        "Left Midfield": (78, 63), "LM": (78, 63),
-        "Right Attacking Midfield": (73, 25), "RAM": (73, 25),
-        "Center Attacking Midfield": (73, 40), "CAM": (73, 40), "AM": (73, 40),
-        "Left Attacking Midfield": (73, 55), "LAM": (73, 55),
-        "Right Wing": (68, 16), "RW": (68, 16),
-        "Left Wing": (68, 62), "LW": (68, 62),
-        "Second Striker": (70, 40), "Secondary Striker": (70, 40), "SS": (70, 40),
-        "Right Center Forward": (66, 29), "RCF": (66, 29),
-        "Center Forward": (65, 40), "CF": (65, 40), "ST": (65, 40),
-        "Left Center Forward": (66, 51), "LCF": (66, 51),
+        "Goalkeeper": (113, 40), "GK": (113, 40),
+        "Right Back": (99.5, 11.5), "RB": (99.5, 11.5),
+        "Right Wing Back": (93.5, 12.5), "RWB": (93.5, 12.5),
+        "Right Center Back": (101.5, 30.5), "RCB": (101.5, 30.5),
+        "Center Back": (102.5, 40), "CB": (102.5, 40),
+        "Left Center Back": (101.5, 49.5), "LCB": (101.5, 49.5),
+        "Left Back": (99.5, 68.5), "LB": (99.5, 68.5),
+        "Left Wing Back": (93.5, 67.5), "LWB": (93.5, 67.5),
+        "Right Defensive Midfield": (89.5, 26), "RDM": (89.5, 26),
+        "Center Defensive Midfield": (90.5, 40), "CDM": (90.5, 40), "DM": (90.5, 40),
+        "Left Defensive Midfield": (89.5, 54), "LDM": (89.5, 54),
+        "Right Midfield": (82, 11.5), "RM": (82, 11.5),
+        "Right Center Midfield": (82, 30.5), "RCM": (82, 30.5),
+        "Center Midfield": (83, 40), "CM": (83, 40),
+        "Left Center Midfield": (82, 49.5), "LCM": (82, 49.5),
+        "Left Midfield": (82, 68.5), "LM": (82, 68.5),
+        "Right Attacking Midfield": (77.5, 22), "RAM": (77.5, 22),
+        "Center Attacking Midfield": (78.5, 40), "CAM": (78.5, 40), "AM": (78.5, 40),
+        "Left Attacking Midfield": (77.5, 58), "LAM": (77.5, 58),
+        "Right Wing": (71.5, 14), "RW": (71.5, 14),
+        "Left Wing": (71.5, 66), "LW": (71.5, 66),
+        "Second Striker": (72.5, 40), "Secondary Striker": (72.5, 40), "SS": (72.5, 40),
+        "Right Center Forward": (68, 26), "RCF": (68, 26),
+        "Center Forward": (68, 40), "CF": (68, 40), "ST": (68, 40),
+        "Left Center Forward": (68, 54), "LCF": (68, 54),
     }
 }
 
@@ -1668,13 +2089,13 @@ def get_tactical_coords(pos_name, idx, is_home):
     if coords:
         return float(coords[0]), float(coords[1])
     if idx == 0:
-        return (10.0, 40.0) if is_home else (110.0, 40.0)
+        return (7.0, 40.0) if is_home else (113.0, 40.0)
     elif idx in [1, 2, 3, 4]:
-        return (24.0, 14.0 + (idx - 1) * 17.0) if is_home else (96.0, 14.0 + (idx - 1) * 17.0)
+        return (19.5, 11.5 + (idx - 1) * 19.0) if is_home else (100.5, 11.5 + (idx - 1) * 19.0)
     elif idx in [5, 6, 7]:
-        return (39.0, 20.0 + (idx - 5) * 20.0) if is_home else (81.0, 20.0 + (idx - 5) * 20.0)
+        return (37.5, 14.0 + (idx - 5) * 26.0) if is_home else (82.5, 14.0 + (idx - 5) * 26.0)
     else:
-        return (53.0, 20.0 + (idx - 8) * 20.0) if is_home else (67.0, 20.0 + (idx - 8) * 20.0)
+        return (51.0, 14.0 + (idx - 8) * 26.0) if is_home else (69.0, 14.0 + (idx - 8) * 26.0)
 
 
 # ==========================================================
@@ -1682,6 +2103,8 @@ def get_tactical_coords(pos_name, idx, is_home):
 # ==========================================================
 
 def parse_statsbomb_events_json(raw_events, match_id=None):
+    if not isinstance(raw_events, list) or not raw_events:
+        raise ValueError("Tệp StatsBomb cần chứa danh sách sự kiện của một trận.")
     valid_periods = {1, 2, 3, 4}
     starting_xi = [e for e in raw_events if (e.get('type') or {}).get('name') == 'Starting XI']
     starting_lineups = {}
@@ -1979,11 +2402,27 @@ def parse_uploaded_csv(df_raw):
         elif cl in ['position', 'position_name', 'pos']: col_map[c] = 'position_name'
             
     df = df_raw.rename(columns=col_map).copy()
+    if 'team_name' not in df or df.empty:
+        raise ValueError("CSV cần có sự kiện và cột team hoặc team_name.")
+    if df.columns.has_duplicates:
+        raise ValueError("CSV có nhiều cột cùng biểu diễn một trường dữ liệu.")
+    if 'player_name' not in df:
+        df['player_name'] = None
+    if 'minute' in df:
+        df['minute'], df['minute_display'] = _event_clock(df['minute'])
+        df['minute'] = df['minute'].astype('float64')
+    for col in ('location_x', 'location_y', 'pass_end_location_x', 'pass_end_location_y'):
+        if col in df:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
     if 'period' in df.columns:
         numeric_period = pd.to_numeric(df['period'], errors='coerce')
         df = df.loc[numeric_period.isna() | numeric_period.isin([1, 2, 3, 4])].copy()
     if 'type_name' not in df.columns:
-        df['type_name'] = np.where(df.get('pass_end_location_x', pd.Series()).notna(), 'Pass', 'Event')
+        df['type_name'] = 'Event'
+        if 'pass_end_location_x' in df:
+            df.loc[df['pass_end_location_x'].notna(), 'type_name'] = 'Pass'
+        if 'shot_outcome_name' in df:
+            df.loc[df['shot_outcome_name'].notna(), 'type_name'] = 'Shot'
         
     if 'shot_outcome_name' not in df.columns and 'pass_outcome_name' in df.columns:
         df['shot_outcome_name'] = np.where(df['type_name'] == 'Shot', df['pass_outcome_name'], None)
@@ -1996,12 +2435,16 @@ def parse_uploaded_csv(df_raw):
     home_score = 0
     away_score = 0
     if 'shot_outcome_name' in df.columns:
-        shots = df[df['shot_outcome_name'].astype(str).str.lower().isin(['goal', '1', 'true'])]
+        aliases = {'goal': 'Goal', '1': 'Goal', '1.0': 'Goal', 'true': 'Goal', 'saved': 'Saved',
+                   'saved to post': 'Saved to Post', 'blocked': 'Blocked', 'wayward': 'Wayward', 'off t': 'Off T', 'post': 'Post'}
+        outcome = df['shot_outcome_name'].astype('string').str.strip().str.lower()
+        df['shot_outcome_name'] = outcome.map(aliases).fillna(df['shot_outcome_name'])
+        shots = df[df['type_name'].eq('Shot') & df['shot_outcome_name'].eq('Goal')]
         for _, s_row in shots.iterrows():
             p_name = str(s_row.get('player_name', 'Player'))
-            p_min = int(s_row.get('minute', 0)) if pd.notnull(s_row.get('minute')) else 0
+            p_min = _safe_minute_int(s_row.get('minute'))
             p_team = str(s_row.get('team_name', ''))
-            goals_info.append({"player": p_name, "minute": p_min, "team": p_team})
+            goals_info.append({"player": p_name, "minute": p_min, "minute_display": s_row.get('minute_display', '—'), "team": p_team})
             if p_team == home_team: home_score += 1
             elif p_team == away_team: away_score += 1
                 
@@ -2026,7 +2469,7 @@ def parse_uploaded_csv(df_raw):
         if 'shot_statsbomb_xg' in t_ev.columns:
             stats_dict[t]['xg'] = round(float(pd.to_numeric(t_ev['shot_statsbomb_xg'], errors='coerce').fillna(0).sum()), 2)
         if 'shot_outcome_name' in shots.columns:
-            stats_dict[t]['shots_on_target'] = len(shots[shots['shot_outcome_name'].isin(['Goal', 'Saved'])])
+            stats_dict[t]['shots_on_target'] = len(shots[shots['shot_outcome_name'].isin(['Goal', 'Saved', 'Saved to Post'])])
             stats_dict[t]['shots_off_target'] = len(shots[shots['shot_outcome_name'].isin(['Off T', 'Wayward', 'Post'])])
             stats_dict[t]['blocked_shots'] = len(shots[shots['shot_outcome_name'] == 'Blocked'])
             stats_dict[t]['goals'] = len(shots[shots['shot_outcome_name'] == 'Goal'])
@@ -2098,6 +2541,12 @@ def render_fotmob_stat_bar(label, home_val, away_val, home_str, away_str, home_c
 # 🎯 BẢN ĐỒ DỨT ĐIỂM (SHOT MAP)
 # ==========================================================
 
+def _has_extra_time(events):
+    if events is None or 'period' not in events:
+        return False
+    return bool(pd.to_numeric(events['period'], errors='coerce').isin([3, 4]).any())
+
+
 def render_shot_map(match_events, home_team, away_team, filter_choice="Tất cả cú sút", current_match=None):
     shots = match_events[match_events['type_name'] == 'Shot'].copy() if 'type_name' in match_events.columns else pd.DataFrame()
 
@@ -2119,23 +2568,19 @@ def render_shot_map(match_events, home_team, away_team, filter_choice="Tất c�
     if 'player_name' not in shots.columns:
         shots['player_name'] = 'Cầu thủ'
     if 'minute' not in shots.columns:
-        shots['minute'] = 0
+        shots['minute'] = np.nan
     if 'shot_outcome_name' not in shots.columns:
         shots['shot_outcome_name'] = ''
         
-    shots['location_x'] = pd.to_numeric(shots['location_x'], errors='coerce')
-    shots['location_y'] = pd.to_numeric(shots['location_y'], errors='coerce')
+    for col in ('location_x', 'location_y'):
+        shots[col] = pd.to_numeric(shots.get(col), errors='coerce')
+    shots['minute_num'], shots['minute_label'] = _event_clock(shots.get('minute_display', shots['minute']).fillna(shots['minute']))
     xg_values = (
         pd.to_numeric(shots['shot_statsbomb_xg'], errors='coerce')
         if 'shot_statsbomb_xg' in shots.columns
         else pd.Series(index=shots.index, dtype='float64')
     )
     shots['shot_statsbomb_xg'] = xg_values.fillna(0.08)
-    shots = shots.dropna(subset=['location_x', 'location_y'])
-    
-    if shots.empty:
-        st.info("ℹ️ Tọa độ các cú sút trong sự kiện không hợp lệ.")
-        return
         
     # Tính toán các chỉ số so sánh (KPI Cards) cho 2 đội
     h_shots_all = shots[shots['team_name'] == home_team]
@@ -2253,7 +2698,7 @@ def render_shot_map(match_events, home_team, away_team, filter_choice="Tất c�
     away_shots['plot_x'] = 120.0 - away_shots['location_x']
     away_shots['plot_y'] = 80.0 - away_shots['location_y']
 
-    all_shots_plot = pd.concat([home_shots, away_shots], ignore_index=True)
+    all_shots_plot = pd.concat([home_shots, away_shots], ignore_index=True).dropna(subset=['plot_x', 'plot_y'])
 
     def _shot_category(outcome):
         o = str(outcome).strip().casefold()
@@ -2287,7 +2732,7 @@ def render_shot_map(match_events, home_team, away_team, filter_choice="Tất c�
             hover_txt = []
             sizes = []
             for _, r in sub.iterrows():
-                min_val = int(r.get('minute', 0))
+                min_val = r['minute_label']
                 p_name = _player_display_name(str(r.get('player_name', 'Cầu thủ')))
                 t_name = str(r.get('team_name', ''))
                 xg_val = float(r.get('shot_statsbomb_xg', 0.08))
@@ -2328,21 +2773,23 @@ def render_shot_map(match_events, home_team, away_team, filter_choice="Tất c�
     with col_map_view:
         with st.container(border=True):
             st.markdown("##### 🎯 Bản Đồ Tọa Độ Dứt Điểm 2D (Kích thước điểm = xG)")
-            st.plotly_chart(fig_shot, width="stretch")
+            if all_shots_plot.empty:
+                st.info("Không có cú sút nào có tọa độ để hiển thị với bộ lọc này.")
+            else:
+                st.plotly_chart(fig_shot, width="stretch")
 
     with col_xg_race:
         with st.container(border=True):
             st.markdown("##### 📈 Biểu Đồ Đường Đua xG Theo Phút (FotMob xG Momentum)")
             fig_race = go.Figure()
-            max_min_shot = int(max(90, pd.to_numeric(shots['minute'], errors='coerce').fillna(90).max()))
+            regulation_end = 120 if _has_extra_time(match_events) else 90
+            max_min_shot = int(max(regulation_end, shots['minute_num'].fillna(0).max()))
             max_cum_xg = 1.0
             for t_name, t_col, fill_rgba, icon_prefix in [
                 (home_team, "#38BDF8", "rgba(56, 189, 248, 0.14)", "🔵"),
                 (away_team, "#FF4D6D", "rgba(255, 77, 109, 0.14)", "🔴")
             ]:
-                t_shots = shots[shots['team_name'] == t_name].copy()
-                t_shots['minute_num'] = pd.to_numeric(t_shots['minute'], errors='coerce').fillna(0).astype(int)
-                t_shots = t_shots.sort_values('minute_num')
+                t_shots = shots.loc[shots['team_name'].eq(t_name)].dropna(subset=['minute_num']).sort_values('minute_num', kind='stable')
                 xs = [0] + t_shots['minute_num'].tolist() + [max_min_shot]
                 cum_xg = t_shots['shot_statsbomb_xg'].cumsum().tolist()
                 ys = [0.0] + [round(v, 2) for v in cum_xg] + ([round(cum_xg[-1], 2)] if cum_xg else [0.0])
@@ -2372,7 +2819,7 @@ def render_shot_map(match_events, home_team, away_team, filter_choice="Tất c�
                             hovertemplate="<b>%{text}</b><br>xG tích lũy: %{y:.2f}<extra></extra>"
                         ))
             fig_race.add_vline(x=45, line_dash="dash", line_color="rgba(148, 163, 184, 0.35)", annotation_text="HT 45'", annotation_position="top")
-            if max_min_shot > 95:
+            if regulation_end == 120:
                 fig_race.add_vline(x=90, line_dash="dash", line_color="rgba(250, 204, 21, 0.40)", annotation_text="FT 90'", annotation_position="top")
             fig_race.update_layout(
                 xaxis=dict(title="Phút thi đấu", range=[0, max_min_shot + 4], gridcolor="rgba(148, 163, 184, 0.12)", zeroline=False),
@@ -2382,17 +2829,23 @@ def render_shot_map(match_events, home_team, away_team, filter_choice="Tất c�
                 font=dict(color="#E2E8F0"),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, bgcolor="rgba(19, 26, 38, 0.9)")
             )
-            st.plotly_chart(fig_race, width="stretch")
+            if shots['minute_num'].notna().any():
+                st.plotly_chart(fig_race, width="stretch")
+                if shots['minute_num'].isna().any():
+                    st.caption("Đường xG theo phút chỉ gồm các cú sút có thời điểm.")
+            else:
+                st.info("Chưa có thời điểm dứt điểm để vẽ đường xG theo phút.")
 
     # Dòng thời gian chi tiết từng cú sút chuẩn FotMob / SofaScore (thay cho bảng xám đơn điệu)
     if not filtered_shots.empty:
         st.markdown("##### 📋 Dòng Thời Gian Dứt Điểm (FotMob Shot Log)")
-        sorted_shots = filtered_shots.sort_values(by="minute", ascending=True)
+        sorted_shots = filtered_shots.sort_values(by="minute_num", kind="stable")
         shot_cards_html = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; max-height: 440px; overflow-y: auto; padding-right: 4px;">'
         for _, sr in sorted_shots.iterrows():
             loc_x = float(sr['location_x'])
             loc_y = float(sr['location_y'])
             dist_m = np.hypot(120.0 - loc_x, 40.0 - loc_y) * 0.9144
+            distance_text = f" • {dist_m:.1f} m" if np.isfinite(dist_m) else ""
             t_name = str(sr.get('team_name', ''))
             is_h = (t_name == home_team)
             p_raw = str(sr.get('player_name', 'Cầu thủ'))
@@ -2409,7 +2862,7 @@ def render_shot_map(match_events, home_team, away_team, filter_choice="Tất c�
             else:
                 b_col, b_txt = "#FF4D6D", "❌ RA NGOÀI"
             xg_v = float(sr.get('shot_statsbomb_xg', 0.0))
-            min_v = int(pd.to_numeric(sr.get('minute', 0), errors='coerce') or 0)
+            min_v = sr['minute_label']
             t_accent = "#38BDF8" if is_h else "#FF4D6D"
             shot_cards_html += (
                 f'<div style="display: flex; align-items: center; gap: 11px; background: #131A26; border: 1px solid #243247; border-left: 3.5px solid {t_accent}; border-radius: 10px; padding: 9px 12px;">'
@@ -2417,7 +2870,7 @@ def render_shot_map(match_events, home_team, away_team, filter_choice="Tất c�
                 f'<img src="{p_photo}" width="38" height="38" style="border-radius: 50%; object-fit: cover; border: 1.5px solid {t_accent}; flex-shrink: 0;">'
                 f'<div style="flex: 1; min-width: 0;">'
                 f'<div style="color: #F8FAFC; font-weight: 800; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{p_disp}</div>'
-                f'<div style="color: #94A3B8; font-size: 11.5px;">{html.escape(t_name)} • {dist_m:.1f}m</div>'
+                f'<div style="color: #94A3B8; font-size: 11.5px;">{html.escape(t_name)}{distance_text}</div>'
                 f'</div>'
                 f'<div style="text-align: right; flex-shrink: 0;">'
                 f'<div style="background: rgba(15, 23, 42, 0.9); border: 1px solid {b_col}; color: {b_col}; font-size: 10.5px; font-weight: 800; padding: 2px 7px; border-radius: 999px;">{b_txt}</div>'
@@ -2444,7 +2897,7 @@ _WC2018_SHOT_PLAYER_ALIASES = {
     "Mathias Jørgensen Jatta": "Mathias Jattah-Njie Jørgensen",
 }
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def load_wc2018_shots():
     shots_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worldcup_2018_shots.csv")
     if not os.path.exists(shots_path):
@@ -2511,6 +2964,113 @@ _WC2018_OWN_GOALS = {
     8658: [{"player": "Mario Mandžukić", "minute": 18, "team": "France", "is_og": True}],
 }
 
+_WC2018_META_JSON = os.path.join(SAMPLE_DIR, "pro_analytics", "wc2018_meta.json")
+_WC2018_EVENTS_PQ = os.path.join(SAMPLE_DIR, "pro_analytics", "wc2018_events.parquet")
+
+
+@st.cache_resource(show_spinner=False)
+def load_wc2018_meta_only():
+    """Đọc siêu tốc danh mục 64 trận WC 2018 (~1ms từ JSON cache thay vì đọc 160MB CSV lúc khởi động)."""
+    if os.path.isfile(_WC2018_META_JSON):
+        try:
+            with open(_WC2018_META_JSON, "r", encoding="utf-8") as mf:
+                return json.load(mf)
+        except Exception:
+            pass
+    _, matches = load_wc2018_raw()
+    return matches
+
+
+@st.cache_data(show_spinner=False, max_entries=32, ttl=1800)
+def load_wc2018_single_match_events(mid: int):
+    """Đọc đúng 1 trận WC 2018 từ ZSTD Parquet (~20ms) thay vì nạp cả 160MB CSV vào RAM."""
+    if not os.path.isfile(_WC2018_EVENTS_PQ):
+        try:
+            from cloud_data_bootstrap import ensure_sample_file
+            ensure_sample_file("pro_analytics/wc2018_events.parquet")
+        except Exception:
+            pass
+    if os.path.isfile(_WC2018_EVENTS_PQ):
+        try:
+            return pd.read_parquet(_WC2018_EVENTS_PQ, filters=[("match_id", "==", int(mid))])
+        except Exception:
+            pass
+    df_full, _ = load_wc2018_raw()
+    return df_full[df_full["match_id"] == mid].copy() if not df_full.empty else pd.DataFrame()
+
+
+_WC2018_HUB_COLS = [
+    "match_id", "match_date", "competition_stage_name",
+    "home_team_home_team_name", "home_team_home_team_group",
+    "away_team_away_team_name", "away_team_away_team_group",
+    "home_score", "away_score", "stadium_name",
+    "player_name", "team_name", "id",
+    "Successful Passes", "Successful Progressive Passes",
+    "pass_shot_assist", "pass_goal_assist", "xT",
+]
+
+
+@st.cache_resource(show_spinner=False)
+def load_wc2018_full_df_lazy():
+    """Chỉ nạp đúng 18 cột cần thiết (~4MB RAM thay vì 240 cột) và chia sẻ toàn server."""
+    if not os.path.isfile(_WC2018_EVENTS_PQ):
+        try:
+            from cloud_data_bootstrap import ensure_sample_file
+            ensure_sample_file("pro_analytics/wc2018_events.parquet")
+        except Exception:
+            pass
+    if os.path.isfile(_WC2018_EVENTS_PQ):
+        try:
+            import pyarrow.parquet as _pq
+            avail = set(_pq.ParquetFile(_WC2018_EVENTS_PQ).schema_arrow.names)
+            cols = [c for c in _WC2018_HUB_COLS if c in avail]
+            return pd.read_parquet(_WC2018_EVENTS_PQ, columns=cols if cols else None)
+        except Exception:
+            pass
+    df_full, _ = load_wc2018_raw()
+    return df_full
+
+
+def _resolve_json_path(path: str):
+    if not path:
+        return None
+    if os.path.isfile(path):
+        return path
+    if not path.endswith(".gz") and os.path.isfile(path + ".gz"):
+        return path + ".gz"
+    if path.endswith(".gz") and os.path.isfile(path[:-3]):
+        return path[:-3]
+    return None
+
+
+def _read_json_maybe_gz(path: str):
+    real_p = _resolve_json_path(path)
+    if not real_p:
+        raise FileNotFoundError(path)
+    if real_p.endswith(".gz"):
+        with gzip.open(real_p, "rt", encoding="utf-8") as f:
+            return json.load(f)
+    with open(real_p, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@st.cache_data(show_spinner=False, max_entries=48, ttl=1800)
+def _load_statsbomb_json_match_cached(fpath: str, mtime: int, match_id):
+    raw_evs = _read_json_maybe_gz(fpath)
+    return parse_statsbomb_events_json(raw_evs, match_id)
+
+
+@st.cache_data(show_spinner=False, max_entries=24, ttl=1800)
+def _load_csv_match_cached(fpath: str, mtime: int):
+    df_raw = pd.read_csv(fpath, low_memory=False)
+    return parse_uploaded_csv(df_raw)
+
+
+@st.cache_data(show_spinner=False, max_entries=64, ttl=1800)
+def _load_statsbomb_lineup_cached(lineup_path: str, mtime: int):
+    return parse_statsbomb_lineups_json(_read_json_maybe_gz(lineup_path))
+
+
 @st.cache_data(show_spinner=False)
 def load_wc2018_raw():
     events_p = os.path.join(DATA_DIR, "worldcup_0_Extract.csv")
@@ -2569,7 +3129,7 @@ def load_wc2018_raw():
 
             if int(mid) in _WC2018_OWN_GOALS:
                 goals_info.extend(_WC2018_OWN_GOALS[int(mid)])
-            goals_info.sort(key=lambda g: int(g.get("minute", 0)))
+            goals_info.sort(key=lambda g: _safe_minute_int(g.get("minute")))
 
             pen_suffix = f" (Pen {pen_home}-{pen_away})" if pen_home is not None else ""
             label = f"{home_team} {h_score} - {a_score} {away_team}{pen_suffix}"
@@ -2587,8 +3147,9 @@ def load_wc2018_raw():
             })
     return df, matches
 
-wc2018_events_full, wc2018_matches = load_wc2018_raw()
+wc2018_matches = load_wc2018_meta_only()
 
+@st.cache_resource(show_spinner=False)
 def load_match_stats_csv():
     stats_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worldcup_match_stats.csv")
     if not os.path.exists(stats_path): return pd.DataFrame()
@@ -2602,6 +3163,7 @@ def load_match_stats_csv():
 match_stats_df = load_match_stats_csv()
 
 # Xây dựng danh mục giải đấu phong cách SofaScore (Popular Competitions)
+@st.cache_data(show_spinner=False, ttl=30)
 def _catalog_dir_signature():
     entries = []
     try:
@@ -2613,12 +3175,18 @@ def _catalog_dir_signature():
         ucl_p = os.path.join(SAMPLE_DIR, "opta_ucl", "ucl_catalog.json")
         if os.path.isfile(ucl_p):
             entries.append(("opta_ucl/ucl_catalog.json", int(os.path.getmtime(ucl_p))))
+        mod_p = os.path.join(SAMPLE_DIR, "opta_modern", "modern_catalog.json")
+        if os.path.isfile(mod_p):
+            entries.append(("opta_modern/modern_catalog.json", int(os.path.getmtime(mod_p))))
+        up_p = os.path.join(SAMPLE_DIR, "pro_analytics", "upcoming_fixtures.parquet")
+        if os.path.isfile(up_p):
+            entries.append(("pro_analytics/upcoming_fixtures.parquet", int(os.path.getmtime(up_p))))
     except OSError:
         pass
     return tuple(entries)
 
-@st.cache_data(show_spinner=False)
-def _build_sofascore_catalog_cached(_sig):
+@st.cache_resource(show_spinner=False)
+def _build_sofascore_catalog_cached(sig):
     catalog = {
         "🏆 FIFA World Cup": [
             {
@@ -2705,6 +3273,13 @@ def _build_sofascore_catalog_cached(_sig):
         "🇩🇪 German Bundesliga": [],
         "🇫🇷 French Ligue 1": [],
         "🇮🇹 Italian Serie A": [],
+        "🏆 UEFA Europa League": [],
+        "🏅 UEFA Conference League": [],
+        "🏴󠁧󠁢󠁥󠁮󠁧󠁿 EFL Championship": [],
+        "🇵🇹 Liga Portugal": [],
+        "🇳🇱 Eredivisie": [],
+        "🏴󠁧󠁢󠁳󠁣󠁴󠁿 Scottish Premiership": [],
+        "🇹🇷 Turkish Süper Lig": [],
         "📁 Trận đấu mới nạp (Custom Ingested)": []
     }
 
@@ -2724,8 +3299,8 @@ def _build_sofascore_catalog_cached(_sig):
                 sb_id = str(item.get("statsbomb_match_id") or "")
                 if sb_id and sb_id in existing_sb_ids:
                     continue
-                ev_full = os.path.join(SAMPLE_DIR, item.get("rel_path", ""))
-                if not os.path.isfile(ev_full):
+                ev_full = _resolve_json_path(os.path.join(SAMPLE_DIR, item.get("rel_path", "")))
+                if not ev_full:
                     continue
                 cat_name = item.get("category") or "📁 Trận đấu mới nạp (Custom Ingested)"
                 rec = dict(item)
@@ -2756,6 +3331,37 @@ def _build_sofascore_catalog_cached(_sig):
                 catalog["⚽ UEFA Champions League"].append(dict(u_item))
         except Exception:
             pass
+
+    # 2B. Nạp kho dữ liệu Hiện Đại 2025/26 – 2026/27 & World Cup 2026 (2.715 trận full tọa độ sự kiện Opta Parquet)
+    modern_manifest_path = os.path.join(SAMPLE_DIR, "opta_modern", "modern_catalog.json")
+    if os.path.isfile(modern_manifest_path):
+        try:
+            with open(modern_manifest_path, "r", encoding="utf-8") as _mmf:
+                _mod_manifest = json.load(_mmf)
+            existing_opta_ids = {
+                str(m.get("opta_match_id"))
+                for m_list in catalog.values()
+                for m in m_list
+                if m.get("opta_match_id")
+            }
+            for m_item in (_mod_manifest.get("matches") or []):
+                oid = str(m_item.get("opta_match_id") or "")
+                if oid and oid in existing_opta_ids:
+                    continue
+                cat_n = m_item.get("category") or "📁 Trận đấu mới nạp (Custom Ingested)"
+                catalog.setdefault(cat_n, []).append(dict(m_item))
+                if oid:
+                    existing_opta_ids.add(oid)
+        except Exception:
+            pass
+
+    # 2C. Nạp kho Trận Đấu Chưa Diễn Ra (1.928 Upcoming Fixtures mùa 2026/27 có sẵn AI 1X2 & xG dự báo)
+    try:
+        for up_item in get_upcoming_catalog_entries(days_ahead=240):
+            cat_n = up_item.get("category") or "📁 Trận đấu mới nạp (Custom Ingested)"
+            catalog.setdefault(cat_n, []).append(up_item)
+    except Exception:
+        pass
 
     # 3. Tự động quét thêm các tệp tùy chỉnh người dùng kéo thả vào sample_data
     known_fnames = {
@@ -2843,7 +3449,7 @@ def _build_sofascore_catalog_cached(_sig):
             return _SB_TEAM_SHORT[s]
         return s[:15].rstrip() if len(s) > 16 else s
 
-    # Sắp xếp mới nhất lên đầu & đưa [Đội Nhà Tỷ-Số Đội Khách · DD/MM/YY] lên đầu để thấy ngay đối thủ!
+    # Sắp xếp mới nhất lên đầu & đưa [Đội Nhà Tỷ-Số Đội Khách · DD/MM/YY] hoặc [⏰ Đội Nhà vs Đội Khách · DD/MM/YY] lên đầu!
     for matches in catalog.values():
         for match in matches:
             raw_d = str(match.get("date") or "").strip()
@@ -2857,7 +3463,9 @@ def _build_sofascore_catalog_cached(_sig):
 
             ht_full = str(match.get("home_team") or "").strip()
             at_full = str(match.get("away_team") or "").strip()
-            if ht_full and at_full and match.get("home_score") is not None and match.get("away_score") is not None:
+            if match.get("is_upcoming") and ht_full and at_full:
+                core_lbl = f"⏰ {_short_sb(ht_full)} vs {_short_sb(at_full)}"
+            elif ht_full and at_full and match.get("home_score") is not None and match.get("away_score") is not None:
                 star_sfx = " ★" if "★" in str(match.get("label") or "") else ""
                 pen_sfx = f" (P{match['pen_home']}-{match['pen_away']})" if match.get("pen_home") is not None else ""
                 core_lbl = f"{_short_sb(ht_full)} {match['home_score']}-{match['away_score']} {_short_sb(at_full)}{pen_sfx}{star_sfx}"
@@ -2865,12 +3473,19 @@ def _build_sofascore_catalog_cached(_sig):
                 core_lbl = str(match.get("label") or "").strip()
 
             match["label"] = f"{core_lbl} · {short_date}" if short_date else core_lbl
-        matches.sort(key=lambda match: (match.get("date") is not None, match.get("date") or ""), reverse=True)
+        matches.sort(key=lambda match: (not bool(match.get("is_upcoming")), match.get("date") is not None, match.get("date") or ""), reverse=True)
 
     return catalog
 
 def build_sofascore_catalog():
-    return _build_sofascore_catalog_cached(_catalog_dir_signature())
+    base_cat = _build_sofascore_catalog_cached(_catalog_dir_signature())
+    sess_custom = st.session_state.get("session_custom_matches") or []
+    if not sess_custom:
+        return base_cat
+    merged = dict(base_cat)
+    ck = "📁 Trận đấu mới nạp (Custom Ingested)"
+    merged[ck] = list(sess_custom) + list(base_cat.get(ck) or [])
+    return merged
 
 catalog = build_sofascore_catalog()
 
@@ -2881,35 +3496,82 @@ catalog = build_sofascore_catalog()
 
 ui_lang, active_workspace = render_sidebar_pro_controls(catalog)
 
-st.sidebar.markdown("""
-<div class="sidebar-filter-title">🎛️ Bộ lọc trận đấu</div>
-""", unsafe_allow_html=True)
+# Mặc định: Lịch Đấu Thời Gian Thực & Trận Chuẩn Bị Diễn Ra theo ngày (GMT+7)
+if active_workspace == "ws_today":
+    render_sidebar_footer_tools(catalog, ui_lang)
+    render_daily_realtime_home(catalog, ui_lang=ui_lang)
+    st.stop()
 
-# 1. Chọn giải đấu (Popular Competitions)
+# Điều hướng sớm cho Trung Tâm AI & Trung Tâm BXH -> Ẩn bộ lọc trận thừa ở Sidebar, tải tức thì (<20ms)!
+if active_workspace == "ws_prematch":
+    render_sidebar_footer_tools(catalog, ui_lang)
+    render_prematch_research_workspace(
+        save_pred_fn=save_user_prediction,
+        get_pred_fn=get_user_prediction,
+        auth_user=st.session_state.get("auth_user"),
+    )
+    st.stop()
+
+if active_workspace == "ws_hub":
+    render_sidebar_footer_tools(catalog, ui_lang)
+    render_tournament_hub_workspace(catalog, load_wc2018_full_df_lazy, wc2018_shots_df, _player_display_name)
+    st.stop()
+
+st.sidebar.markdown('<div class="sidebar-section-hdr">BỘ LỌC TRẬN ĐẤU</div>', unsafe_allow_html=True)
+
+# 1. Chọn giải đấu
 comp_names = [k for k in catalog.keys() if len(catalog[k]) > 0]
-_total_catalog_matches = sum(len(catalog[k]) for k in comp_names)
-st.sidebar.caption(f"📚 Kho Big Data hiện có: **{_total_catalog_matches:,} trận** • **{len(comp_names)} giải đấu**")
 
 _jmp_comp = st.session_state.pop("jump_comp", None)
 _jmp_match = st.session_state.pop("jump_match_label", None)
 if _jmp_comp and _jmp_comp in comp_names:
     st.session_state["sidebar_comp_sel"] = _jmp_comp
 if _jmp_match:
+    st.session_state.pop("daily_match_center_fixture", None)
     st.session_state["sidebar_season_sel"] = "ALL"
+    st.session_state["sidebar_status_sel"] = "played"
+def _clear_daily_match_override():
+    st.session_state.pop("daily_match_center_fixture", None)
+
+
 if "sidebar_comp_sel" in st.session_state and st.session_state["sidebar_comp_sel"] not in comp_names:
     st.session_state["sidebar_comp_sel"] = comp_names[0]
 selected_comp = st.sidebar.selectbox(
-    "Chọn Giải Đấu:",
+    "Giải đấu",
     comp_names,
     index=0,
-    format_func=lambda k: f"{k} ({len(catalog[k]):,} trận)",
+    format_func=lambda k: f"{k} ({len(catalog[k]):,})",
     key="sidebar_comp_sel",
+    on_change=_clear_daily_match_override,
 )
 
 if _jmp_match:
     st.session_state["sidebar_team_sel"] = "ALL"
 
-all_comp_matches = catalog[selected_comp]
+raw_comp_matches = catalog[selected_comp]
+_played_in_comp = [m for m in raw_comp_matches if not m.get("is_upcoming")]
+_upcoming_in_comp = sorted([m for m in raw_comp_matches if m.get("is_upcoming")], key=lambda m: str(m.get("date") or "9999-99-99"))
+
+if _played_in_comp and _upcoming_in_comp:
+    _st_opts = ["played", "upcoming"]
+    if "sidebar_status_sel" not in st.session_state or st.session_state["sidebar_status_sel"] not in _st_opts:
+        st.session_state["sidebar_status_sel"] = "played"
+    _st_choice = st.sidebar.radio(
+        "Trạng thái",
+        _st_opts,
+        format_func=lambda s: f"Đã đá ({len(_played_in_comp):,})" if s == "played" else f"Sắp đá ({len(_upcoming_in_comp):,})",
+        horizontal=True,
+        key="sidebar_status_sel",
+        label_visibility="collapsed",
+        on_change=_clear_daily_match_override,
+    )
+    all_comp_matches = _played_in_comp if _st_choice == "played" else _upcoming_in_comp
+elif _upcoming_in_comp:
+    all_comp_matches = _upcoming_in_comp
+else:
+    all_comp_matches = _played_in_comp
+
+# Áp dụng trước bộ lọc Mùa giải / Đội bóng (giá trị lưu trong session_state, điều khiển đặt gọn bên dưới Trận đấu)
 _season_counts = {}
 for _m_item in all_comp_matches:
     _s_prefix = str(_m_item.get("stage") or "Khác").split(" - ")[0].strip() or "Khác"
@@ -2917,129 +3579,217 @@ for _m_item in all_comp_matches:
 
 def _clean_season_disp(sk: str) -> str:
     if sk == "ALL":
-        return f"Tất cả mùa giải ({len(all_comp_matches):,} trận)"
-    short_sk = sk.replace("UEFA Champions League ", "Mùa ").replace("Champions League ", "Chung Kết ")
-    return f"{short_sk} ({_season_counts[sk]:,} trận)"
+        return f"Tất cả mùa ({len(all_comp_matches):,})"
+    short_sk = sk.replace("UEFA Champions League ", "Mùa ").replace("Champions League ", "CK ")
+    return f"{short_sk} ({_season_counts[sk]:,})"
 
-if len(_season_counts) > 1:
-    _season_keys = ["ALL"] + list(_season_counts.keys())
-    if "sidebar_season_sel" in st.session_state and st.session_state["sidebar_season_sel"] not in _season_keys:
-        st.session_state["sidebar_season_sel"] = "ALL"
-    selected_season_key = st.sidebar.selectbox(
-        "🗓️ Mùa giải / Năm:",
-        _season_keys,
-        index=0,
-        format_func=_clean_season_disp,
-        key="sidebar_season_sel",
-    )
-    season_matches = (
-        all_comp_matches
-        if selected_season_key == "ALL"
-        else [m for m in all_comp_matches if (str(m.get("stage") or "Khác").split(" - ")[0].strip() or "Khác") == selected_season_key]
-    )
-else:
-    season_matches = all_comp_matches
+_season_keys = ["ALL"] + list(_season_counts.keys()) if len(_season_counts) > 1 else ["ALL"]
+if "sidebar_season_sel" not in st.session_state or st.session_state["sidebar_season_sel"] not in _season_keys:
+    st.session_state["sidebar_season_sel"] = "ALL"
+_cur_season_key = st.session_state["sidebar_season_sel"]
+season_matches = (
+    all_comp_matches
+    if _cur_season_key == "ALL"
+    else [m for m in all_comp_matches if (str(m.get("stage") or "Khác").split(" - ")[0].strip() or "Khác") == _cur_season_key]
+)
 
-# 2. Lọc nhanh theo Đội bóng (giúp tìm trận trong 1 giây không cần cuộn dài)
 _team_counts = {}
 for _m_t in season_matches:
     for _tk in ("home_team", "away_team"):
         _tn = str(_m_t.get(_tk) or "").strip()
         if _tn:
             _team_counts[_tn] = _team_counts.get(_tn, 0) + 1
-
-if len(_team_counts) > 2:
-    _team_keys = ["ALL"] + sorted(_team_counts.keys())
-    if "sidebar_team_sel" in st.session_state and st.session_state["sidebar_team_sel"] not in _team_keys:
-        st.session_state["sidebar_team_sel"] = "ALL"
-    selected_team_key = st.sidebar.selectbox(
-        "🛡️ Lọc theo Đội bóng (gõ tên đội):",
-        _team_keys,
-        index=0,
-        format_func=lambda tk: f"Tất cả các đội ({len(season_matches):,} trận)" if tk == "ALL" else f"{tk} ({_team_counts[tk]} trận)",
-        key="sidebar_team_sel",
-    )
-    comp_matches = (
-        season_matches
-        if selected_team_key == "ALL"
-        else [m for m in season_matches if m.get("home_team") == selected_team_key or m.get("away_team") == selected_team_key]
-    )
-else:
-    comp_matches = season_matches
+_team_keys = ["ALL"] + sorted(_team_counts.keys()) if len(_team_counts) > 2 else ["ALL"]
+if "sidebar_team_sel" not in st.session_state or st.session_state["sidebar_team_sel"] not in _team_keys:
+    st.session_state["sidebar_team_sel"] = "ALL"
+_cur_team_key = st.session_state["sidebar_team_sel"]
+comp_matches = (
+    season_matches
+    if _cur_team_key == "ALL"
+    else [m for m in season_matches if m.get("home_team") == _cur_team_key or m.get("away_team") == _cur_team_key]
+)
 
 match_labels = [m["label"] for m in comp_matches]
 
-# 3. Chọn trận đấu trong giải đấu đó (SofaScore Match Fixtures)
+# 2. Chọn Trận Đấu — nằm NGAY dưới Giải Đấu để luồng thao tác liền mạch!
 if match_labels:
     if _jmp_match and _jmp_match in match_labels:
         st.session_state["sidebar_match_sel"] = _jmp_match
     if "sidebar_match_sel" in st.session_state and st.session_state["sidebar_match_sel"] not in match_labels:
         st.session_state["sidebar_match_sel"] = match_labels[0]
-    selected_match_label = st.sidebar.selectbox("⚽ Trận đấu (gõ đối thủ để tìm):", match_labels, index=0, key="sidebar_match_sel")
+    selected_match_label = st.sidebar.selectbox(
+        "Trận đấu (gõ tên đội để tìm)",
+        match_labels,
+        index=0,
+        key="sidebar_match_sel",
+        on_change=_clear_daily_match_override,
+    )
     selected_match_meta = next(m for m in comp_matches if m["label"] == selected_match_label)
 else:
     selected_match_meta = catalog["🏆 FIFA World Cup"][0]
 
-# 3. Nạp thêm trận đấu mới (File cục bộ hoặc Tải trực tiếp từ GitHub StatsBomb)
-with st.sidebar.expander("➕ Nhập / Tải thêm trận đấu mới", expanded=False):
-    st.caption("Kéo thả tệp `.json` / `.csv` hoặc nhập mã `Match ID` từ kho StatsBomb Open Data để tải tự động!")
-    uploaded = st.file_uploader("Kéo thả tệp dữ liệu:", type=["json", "csv"], key="sidebar_file_uploader")
+# 3. Gom Lọc Mùa / Đội & Nạp trận vào 1 ngăn gọn duy nhất
+with st.sidebar.expander("Lọc Mùa / Đội & Nạp dữ liệu", expanded=False):
+    if len(_season_keys) > 1:
+        st.selectbox("Mùa giải", _season_keys, format_func=_clean_season_disp, key="sidebar_season_sel", on_change=_clear_daily_match_override)
+    if len(_team_keys) > 1:
+        st.selectbox("Đội bóng", _team_keys, format_func=lambda tk: f"Tất cả đội ({len(season_matches):,})" if tk == "ALL" else f"{tk} ({_team_counts[tk]})", key="sidebar_team_sel", on_change=_clear_daily_match_override)
+    st.markdown("<hr style='margin:8px 0;border-color:rgba(148,163,184,0.12);'>", unsafe_allow_html=True)
+    uploaded = st.file_uploader("Tải tệp trận (.json / .csv)", type=["json", "csv"], key="sidebar_file_uploader")
     if uploaded is not None:
-        save_p = os.path.join(SAMPLE_DIR, uploaded.name)
-        with open(save_p, "wb") as f:
-            f.write(uploaded.getbuffer())
-        st.success(f"Đã lưu {uploaded.name}! Trận đấu đã được thêm vào danh mục.")
-        st.rerun()
-    st.markdown("---")
-    sb_mid_in = st.text_input("🌐 Tải nhanh theo StatsBomb Match ID:", placeholder="VD: 3869684, 3942819, 3788741...", key="sb_direct_id")
-    if st.button("⬇️ Tải tự động từ GitHub StatsBomb", width="stretch", key="btn_sb_pull"):
+        safe_name = os.path.basename(str(uploaded.name or "custom_match.json"))
+        up_sig = f"{safe_name}:{hashlib.sha256(uploaded.getbuffer()).hexdigest()}"
+        if st.session_state.get("_last_uploaded_sig") != up_sig:
+            try:
+                raw_bytes = bytes(uploaded.getbuffer())
+                if safe_name.lower().endswith(".json"):
+                    parsed_up = parse_statsbomb_events_json(json.loads(raw_bytes.decode("utf-8")), safe_name)
+                else:
+                    parsed_up = parse_uploaded_csv(pd.read_csv(io.BytesIO(raw_bytes), low_memory=False))
+                lbl_up = f"{parsed_up['home_team']} {parsed_up['home_score']}-{parsed_up['away_score']} {parsed_up['away_team']} (Phiên này)"
+                rec_up = {
+                    "id": f"sess_{hashlib.md5(up_sig.encode()).hexdigest()[:10]}",
+                    "label": lbl_up,
+                    "home_team": parsed_up["home_team"],
+                    "away_team": parsed_up["away_team"],
+                    "home_score": parsed_up["home_score"],
+                    "away_score": parsed_up["away_score"],
+                    "stage": "Custom (Phiên cá nhân)",
+                    "source_type": "session_parsed",
+                    "parsed_bundle": parsed_up,
+                }
+                lst_up = [x for x in (st.session_state.get("session_custom_matches") or []) if x["id"] != rec_up["id"]]
+                st.session_state["session_custom_matches"] = ([rec_up] + lst_up)[:5]
+                st.session_state["_last_uploaded_sig"] = up_sig
+                st.session_state["jump_comp"] = "📁 Trận đấu mới nạp (Custom Ingested)"
+                st.session_state["jump_match_label"] = lbl_up
+                st.success(f"Đã nạp riêng cho phiên của bạn: {lbl_up}")
+                st.rerun()
+            except Exception as up_err:
+                st.error(f"Tệp không hợp lệ: {up_err}")
+    sb_mid_in = st.text_input("Tải theo StatsBomb ID", placeholder="VD: 3869684...", key="sb_direct_id")
+    if st.button("Tải từ StatsBomb", width="stretch", key="btn_sb_pull"):
         mid_clean = str(sb_mid_in or "").strip()
         if not mid_clean.isdigit():
-            st.warning("Vui lòng nhập mã số Match ID hợp lệ (chỉ gồm chữ số).")
+            st.warning("Vui lòng nhập mã số hợp lệ.")
         else:
             try:
-                ev_dir = os.path.join(SAMPLE_DIR, "events")
-                lu_dir = os.path.join(SAMPLE_DIR, "lineups")
-                os.makedirs(ev_dir, exist_ok=True)
-                os.makedirs(lu_dir, exist_ok=True)
                 ev_url = f"https://raw.githubusercontent.com/statsbomb/open-data/master/data/events/{mid_clean}.json"
                 lu_url = f"https://raw.githubusercontent.com/statsbomb/open-data/master/data/lineups/{mid_clean}.json"
-                with urllib.request.urlopen(ev_url, timeout=25) as r_ev:
-                    raw_ev_bytes = r_ev.read()
-                raw_ev_json = json.loads(raw_ev_bytes.decode("utf-8"))
-                save_ev_p = os.path.join(SAMPLE_DIR, f"match_{mid_clean}.json")
-                with open(save_ev_p, "wb") as f_out:
-                    f_out.write(raw_ev_bytes)
+                with urllib.request.urlopen(ev_url, timeout=15) as r_ev:
+                    raw_ev_json = json.loads(r_ev.read().decode("utf-8"))
+                squads_new = {}
                 try:
-                    with urllib.request.urlopen(lu_url, timeout=20) as r_lu:
-                        with open(os.path.join(lu_dir, f"{mid_clean}.json"), "wb") as f_lu:
-                            f_lu.write(r_lu.read())
+                    with urllib.request.urlopen(lu_url, timeout=10) as r_lu:
+                        squads_new = parse_statsbomb_lineups_json(json.loads(r_lu.read().decode("utf-8")))
                 except Exception:
-                    pass
+                    squads_new = {}
                 parsed_new = parse_statsbomb_events_json(raw_ev_json, mid_clean)
-                st.success(f"✅ Đã tải thành công: {parsed_new['home_team']} {parsed_new['home_score']} - {parsed_new['away_score']} {parsed_new['away_team']}!")
+                lbl_new = f"{parsed_new['home_team']} {parsed_new['home_score']}-{parsed_new['away_score']} {parsed_new['away_team']} (SB #{mid_clean})"
+                rec_new = {
+                    "id": f"sb_sess_{mid_clean}",
+                    "statsbomb_match_id": mid_clean,
+                    "label": lbl_new,
+                    "home_team": parsed_new["home_team"],
+                    "away_team": parsed_new["away_team"],
+                    "home_score": parsed_new["home_score"],
+                    "away_score": parsed_new["away_score"],
+                    "stage": f"StatsBomb #{mid_clean}",
+                    "source_type": "session_parsed",
+                    "parsed_bundle": parsed_new,
+                    "parsed_squads": squads_new,
+                }
+                lst_up = [x for x in (st.session_state.get("session_custom_matches") or []) if x["id"] != rec_new["id"]]
+                st.session_state["session_custom_matches"] = ([rec_new] + lst_up)[:5]
+                st.session_state["jump_comp"] = "📁 Trận đấu mới nạp (Custom Ingested)"
+                st.session_state["jump_match_label"] = lbl_new
+                st.success(f"Đã tải: {lbl_new}")
                 st.rerun()
             except Exception as dl_err:
-                st.error(f"Không tìm thấy Match ID {mid_clean} trên kho mở StatsBomb ({dl_err}).")
+                st.error(f"Không tìm thấy ID {mid_clean} ({dl_err}).")
+
+render_sidebar_footer_tools(catalog, ui_lang)
 
 
 # ==========================================================
-# ⚡ NẠP VÀ PHÂN TÍCH DỮ LIỆU CỦA TRẬN ĐẤU ĐƯỢC CHỌN
+# ⚡ NẠP DỮ LIỆU TRẬN ĐẤU ĐƯỢC CHỌN
 # ==========================================================
 
-current_match = {}
-match_events = pd.DataFrame()
-custom_stats_dict = None
-custom_lineups = {}
-match_squads = {}
+_daily_mc_fixture = st.session_state.get("daily_match_center_fixture") if active_workspace == "ws_match" else None
+_daily_mc_loaded = False
+_meta_ov = {}
+if isinstance(_daily_mc_fixture, dict) and _daily_mc_fixture:
+    match_events, custom_stats_dict, custom_lineups, match_squads, current_match, _meta_ov = build_full_match_center_bundle(
+        _daily_mc_fixture,
+        SAMPLE_DIR,
+        force_refresh=bool(st.session_state.pop("daily_mc_force_refresh", False)),
+    )
+    selected_comp = _meta_ov["competition"]
+    selected_match_meta = _meta_ov
+    _daily_mc_loaded = True
 
 src_type = selected_match_meta.get("source_type")
 
-if src_type == "json_file":
-    fpath = selected_match_meta.get("path")
-    with open(fpath, "r", encoding="utf-8") as f:
-        raw_evs = json.load(f)
-    parsed = parse_statsbomb_events_json(raw_evs, selected_match_meta.get("id"))
+if not _daily_mc_loaded and src_type == "upcoming_fixture":
+    if active_workspace == "ws_match":
+        up_df_cur = load_upcoming_fixtures_df()
+        uid_cur = str(selected_match_meta.get("upcoming_match_id") or "")
+        matched_rows = up_df_cur[up_df_cur["match_id"].astype(str) == uid_cur] if (not up_df_cur.empty and uid_cur) else pd.DataFrame()
+        if not matched_rows.empty:
+            hist_cur = load_historical_xg_df()
+            espn_cur = load_espn_live_cache()
+            b_top1, b_top2 = st.columns([3.5, 1.5])
+            b_top1.caption("🔮 Bạn đang xem hồ sơ phân tích trận đấu **chưa diễn ra** (Pre-Match Research & AI Prediction).")
+            if b_top2.button("📡 Mở toàn bộ Pre-Match Lab & Bộ Quét Vòng Đấu", width="stretch", key="btn_open_full_prematch"):
+                st.session_state["jump_upcoming_match_id"] = uid_cur
+                st.session_state["pending_workspace"] = "ws_prematch"
+                st.rerun()
+            pkg_cur = build_prematch_research_package(matched_rows.iloc[0], hist_cur, espn_cur, fetch_live_intel=True)
+            render_single_upcoming_dossier(
+                pkg_cur,
+                save_pred_fn=save_user_prediction,
+                get_pred_fn=get_user_prediction,
+                auth_user=st.session_state.get("auth_user"),
+                key_prefix="sb_up",
+            )
+            st.stop()
+    # Nếu người dùng đang ở tab Live/Hub/AI mà sidebar đang trỏ trận chưa đá -> fallback sang trận đã đá mới nhất làm ngữ cảnh
+    selected_match_meta = next((m for m in catalog.get("🏆 FIFA World Cup", []) if not m.get("is_upcoming")), catalog["🏆 FIFA World Cup"][0])
+    src_type = selected_match_meta.get("source_type")
+
+if not _daily_mc_loaded:
+    current_match = {}
+    match_events = pd.DataFrame()
+    custom_stats_dict = None
+    custom_lineups = {}
+    match_squads = {}
+
+if _daily_mc_loaded:
+    pass
+elif src_type == "session_parsed":
+    parsed = selected_match_meta["parsed_bundle"]
+    match_events = parsed['events_df']
+    custom_stats_dict = parsed['stats_dict']
+    custom_lineups = parsed['starting_lineups']
+    match_squads = selected_match_meta.get("parsed_squads") or {}
+    current_match = {
+        "id": selected_match_meta.get("id"),
+        "stage": selected_match_meta.get("stage", "Custom Match"),
+        "home_team": parsed['home_team'],
+        "away_team": parsed['away_team'],
+        "home_score": parsed['home_score'],
+        "away_score": parsed['away_score'],
+        "pen_home": parsed.get('pen_home'),
+        "pen_away": parsed.get('pen_away'),
+        "stadium": selected_match_meta.get("stadium", "Sân vận động"),
+        "referee": selected_match_meta.get("referee", "Trọng tài"),
+        "goals": parsed['goals']
+    }
+
+elif src_type == "json_file":
+    fpath = _resolve_json_path(selected_match_meta.get("path"))
+    mtime = int(os.path.getmtime(fpath)) if fpath else 0
+    parsed = _load_statsbomb_json_match_cached(fpath, mtime, selected_match_meta.get("id"))
     match_events = parsed['events_df']
     custom_stats_dict = parsed['stats_dict']
     custom_lineups = parsed['starting_lineups']
@@ -3059,8 +3809,8 @@ if src_type == "json_file":
 
 elif src_type == "csv_file":
     fpath = selected_match_meta.get("path")
-    df_raw = pd.read_csv(fpath, low_memory=False)
-    parsed = parse_uploaded_csv(df_raw)
+    mtime = int(os.path.getmtime(fpath)) if (fpath and os.path.isfile(fpath)) else 0
+    parsed = _load_csv_match_cached(fpath, mtime)
     match_events = parsed['events_df']
     custom_stats_dict = parsed['stats_dict']
     custom_lineups = parsed['starting_lineups']
@@ -3080,7 +3830,7 @@ elif src_type == "csv_file":
 
 elif src_type == "wc2018_hdfs":
     mid = selected_match_meta.get("id")
-    match_events = wc2018_events_full[wc2018_events_full['match_id'] == mid].copy()
+    match_events = load_wc2018_single_match_events(int(mid))
     if not wc2018_shots_df.empty:
         mid_shots = wc2018_shots_df[
             (wc2018_shots_df['match_id'] == mid) &
@@ -3102,7 +3852,7 @@ elif src_type == "wc2018_hdfs":
         "goals": selected_match_meta.get("goals", [])
     }
 
-elif src_type == "opta_ucl_parquet":
+elif src_type in ("opta_ucl_parquet", "opta_modern_parquet"):
     match_events, custom_stats_dict, custom_lineups, match_squads, current_match = load_opta_ucl_match_bundle(
         selected_match_meta, SAMPLE_DIR
     )
@@ -3120,12 +3870,11 @@ if not lineup_match_id:
     elif str(source_id).isdigit():
         lineup_match_id = str(source_id)
 
-if lineup_match_id:
-    lineup_path = os.path.join(SAMPLE_DIR, "lineups", f"{lineup_match_id}.json")
-    if os.path.isfile(lineup_path):
+if lineup_match_id and not match_squads:
+    lineup_path = _resolve_json_path(os.path.join(SAMPLE_DIR, "lineups", f"{lineup_match_id}.json"))
+    if lineup_path:
         try:
-            with open(lineup_path, "r", encoding="utf-8") as lineup_file:
-                match_squads = parse_statsbomb_lineups_json(json.load(lineup_file))
+            match_squads = _load_statsbomb_lineup_cached(lineup_path, int(os.path.getmtime(lineup_path)))
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             match_squads = {}
 
@@ -3146,9 +3895,8 @@ def _order_team_players_chronologically(team_events):
     if valid_df.empty:
         return []
 
-    valid_df['_p'] = pd.to_numeric(valid_df.get('period', 1), errors='coerce').fillna(1)
-    valid_df['_m'] = pd.to_numeric(valid_df.get('minute', 0), errors='coerce').fillna(0)
-    valid_df['_s'] = pd.to_numeric(valid_df.get('second', 0), errors='coerce').fillna(0)
+    for col, key, default in [('period', '_p', 1), ('minute', '_m', 0), ('second', '_s', 0)]:
+        valid_df[key] = pd.to_numeric(valid_df[col], errors='coerce').fillna(default) if col in valid_df else default
     valid_df['_t'] = (valid_df['_p'] - 1) * 45.0 + valid_df['_m'] + valid_df['_s'] / 60.0
 
     player_meta = []
@@ -3182,19 +3930,12 @@ def _order_team_players_chronologically(team_events):
     subs.sort(key=lambda item: (item[1], item[2]))
     return [item[0] for item in starters + subs]
 
-if custom_lineups and current_match['home_team'] in custom_lineups:
-    _home_starters = [p['name'] for p in custom_lineups[current_match['home_team']]['players']]
-    _home_others = [p for p in _order_team_players_chronologically(home_events) if p not in _home_starters]
-    home_players = _home_starters + _home_others
-else:
-    home_players = _order_team_players_chronologically(home_events)
-
-if custom_lineups and current_match['away_team'] in custom_lineups:
-    _away_starters = [p['name'] for p in custom_lineups[current_match['away_team']]['players']]
-    _away_others = [p for p in _order_team_players_chronologically(away_events) if p not in _away_starters]
-    away_players = _away_starters + _away_others
-else:
-    away_players = _order_team_players_chronologically(away_events)
+def _resolve_ordered_players(team_name, team_events, custom_lineups_dict):
+    if custom_lineups_dict and team_name in custom_lineups_dict:
+        starters = [p['name'] for p in custom_lineups_dict[team_name]['players']]
+        others = [p for p in _order_team_players_chronologically(team_events) if p not in starters]
+        return starters + others
+    return _order_team_players_chronologically(team_events)
 
 _COMPLEMENTARY_SLOTS = {
     "Center Back": ["Right Center Back", "Left Center Back", "Center Back"],
@@ -3245,9 +3986,9 @@ def _deconflict_pitch_coordinates(lineup, is_home):
         p["x"], p["y"] = float(x), float(y)
 
     # Bước 2: Chống đè tọa độ có tính đến tỷ lệ khung hình ngang/dọc của sân
-    min_dist = 9.6
-    x_min, x_max = (16.0, 56.5) if is_home else (63.5, 104.0)
-    y_min, y_max = 14.0, 64.0
+    min_dist = 11.2
+    x_min, x_max = (14.5, 53.0) if is_home else (67.0, 105.5)
+    y_min, y_max = 10.5, 69.5
 
     for _ in range(30):
         moved = False
@@ -3255,7 +3996,7 @@ def _deconflict_pitch_coordinates(lineup, is_home):
             for j in range(i + 1, len(lineup)):
                 dx = lineup[j]["x"] - lineup[i]["x"]
                 dy = lineup[j]["y"] - lineup[i]["y"]
-                eff_dist = float(np.hypot(dx * 0.76, dy * 0.94))
+                eff_dist = float(np.hypot(dx * 0.92, dy * 0.68))
                 if eff_dist < min_dist:
                     moved = True
                     overlap = (min_dist - eff_dist) + 0.45
@@ -3418,12 +4159,17 @@ def _format_formation(raw_fmt, fallback_lineup=None):
         return s
     return _infer_formation_from_lineup(fallback_lineup)
 
-def _build_single_player_entry(p, idx, team_events, is_home, team_name="", tactics_map=None, is_sub=False, team_gk_saves=None, team_goals_conceded=0):
-    p_ev = team_events[team_events['player_name'] == p]
+def _build_single_player_entry(p, idx, team_events, is_home, team_name="", tactics_map=None, is_sub=False, team_gk_saves=None, team_goals_conceded=0, player_events_map=None):
+    if player_events_map is not None:
+        p_ev = player_events_map.get(p)
+        if p_ev is None:
+            p_ev = team_events.iloc[0:0]
+    else:
+        p_ev = team_events[team_events['player_name'] == p]
     t_player = (tactics_map or {}).get(p)
     pos_raw = t_player.get('position', '') if t_player else ''
     if not pos_raw and 'position_name' in p_ev.columns:
-        p1_ev = p_ev[pd.to_numeric(p_ev.get('period', 1), errors='coerce').fillna(1) == 1]
+        p1_ev = p_ev[pd.to_numeric(p_ev['period'], errors='coerce').fillna(1) == 1] if 'period' in p_ev else p_ev
         pos_vals = p1_ev['position_name'].dropna().astype(str) if not p1_ev.empty else p_ev['position_name'].dropna().astype(str)
         pos_vals = pos_vals[pos_vals.str.strip() != '']
         if not pos_vals.empty:
@@ -3492,49 +4238,101 @@ def _build_single_player_entry(p, idx, team_events, is_home, team_name="", tacti
         "is_home": is_home, "team_name": team_name, "is_sub": is_sub
     }
 
-def build_lineup_data(players, team_events, is_home, team_name="", tactics_info=None, team_gk_saves=None, team_goals_conceded=0):
+def build_lineup_data(players, team_events, is_home, team_name="", tactics_info=None, team_gk_saves=None, team_goals_conceded=0, player_events_map=None):
     tactics_players = tactics_info.get('players', []) if tactics_info else []
     tactics_map = {p['name']: p for p in tactics_players}
+    if player_events_map is None and (not team_events.empty) and 'player_name' in team_events.columns:
+        player_events_map = dict(tuple(team_events.groupby('player_name', sort=False)))
     chosen_players = players[:11]
     lineup = [
         _build_single_player_entry(
             p, idx, team_events, is_home, team_name=team_name, tactics_map=tactics_map, is_sub=False,
-            team_gk_saves=team_gk_saves, team_goals_conceded=team_goals_conceded
+            team_gk_saves=team_gk_saves, team_goals_conceded=team_goals_conceded,
+            player_events_map=player_events_map,
         )
         for idx, p in enumerate(chosen_players)
     ]
     return _deconflict_pitch_coordinates(lineup, is_home)
 
-def build_subs_data(players, team_events, is_home, team_name="", team_gk_saves=None, team_goals_conceded=0):
+def build_subs_data(players, team_events, is_home, team_name="", team_gk_saves=None, team_goals_conceded=0, player_events_map=None):
+    if player_events_map is None and (not team_events.empty) and 'player_name' in team_events.columns:
+        player_events_map = dict(tuple(team_events.groupby('player_name', sort=False)))
     sub_players = players[11:]
     return [
         _build_single_player_entry(
             p, 11 + idx, team_events, is_home, team_name=team_name, tactics_map=None, is_sub=True,
-            team_gk_saves=team_gk_saves, team_goals_conceded=team_goals_conceded
+            team_gk_saves=team_gk_saves, team_goals_conceded=team_goals_conceded,
+            player_events_map=player_events_map,
         )
         for idx, p in enumerate(sub_players)
     ]
 
-home_tactics = custom_lineups.get(current_match['home_team'])
-away_tactics = custom_lineups.get(current_match['away_team'])
+@st.cache_data(show_spinner=False, max_entries=64, ttl=1800)
+def _compute_match_lineups_cached(
+    match_id_key: str,
+    src_type_key: str,
+    n_events_key: int,
+    home_team: str,
+    away_team: str,
+    home_score: int,
+    away_score: int,
+    h_saves,
+    a_saves,
+    _home_events: pd.DataFrame,
+    _away_events: pd.DataFrame,
+    _custom_lineups: dict,
+):
+    h_players = _resolve_ordered_players(home_team, _home_events, _custom_lineups)
+    a_players = _resolve_ordered_players(away_team, _away_events, _custom_lineups)
+    prefetch_match_avatars(
+        [(str(p), home_team) for p in h_players] + [(str(p), away_team) for p in a_players]
+    )
+    h_tactics = (_custom_lineups or {}).get(home_team)
+    a_tactics = (_custom_lineups or {}).get(away_team)
+    h_ev_map = dict(tuple(_home_events.groupby('player_name', sort=False))) if (not _home_events.empty and 'player_name' in _home_events.columns) else {}
+    a_ev_map = dict(tuple(_away_events.groupby('player_name', sort=False))) if (not _away_events.empty and 'player_name' in _away_events.columns) else {}
+    h_lineup = build_lineup_data(
+        h_players, _home_events, is_home=True, team_name=home_team,
+        tactics_info=h_tactics, team_gk_saves=h_saves, team_goals_conceded=away_score,
+        player_events_map=h_ev_map,
+    )
+    a_lineup = build_lineup_data(
+        a_players, _away_events, is_home=False, team_name=away_team,
+        tactics_info=a_tactics, team_gk_saves=a_saves, team_goals_conceded=home_score,
+        player_events_map=a_ev_map,
+    )
+    h_form = _format_formation((h_tactics or {}).get('formation'), fallback_lineup=h_lineup)
+    a_form = _format_formation((a_tactics or {}).get('formation'), fallback_lineup=a_lineup)
+    h_subs = build_subs_data(
+        h_players, _home_events, is_home=True, team_name=home_team,
+        team_gk_saves=h_saves, team_goals_conceded=away_score,
+        player_events_map=h_ev_map,
+    )
+    a_subs = build_subs_data(
+        a_players, _away_events, is_home=False, team_name=away_team,
+        team_gk_saves=a_saves, team_goals_conceded=home_score,
+        player_events_map=a_ev_map,
+    )
+    return h_players, a_players, h_lineup, a_lineup, h_form, a_form, h_subs, a_subs
 
-home_lineup = build_lineup_data(
-    home_players, home_events, is_home=True, team_name=current_match['home_team'],
-    tactics_info=home_tactics, team_gk_saves=h_team_gk_saves, team_goals_conceded=int(current_match.get('away_score', 0) or 0)
-)
-away_lineup = build_lineup_data(
-    away_players, away_events, is_home=False, team_name=current_match['away_team'],
-    tactics_info=away_tactics, team_gk_saves=a_team_gk_saves, team_goals_conceded=int(current_match.get('home_score', 0) or 0)
-)
-h_formation_str = _format_formation((home_tactics or {}).get('formation'), fallback_lineup=home_lineup)
-a_formation_str = _format_formation((away_tactics or {}).get('formation'), fallback_lineup=away_lineup)
-home_subs_lineup = build_subs_data(
-    home_players, home_events, is_home=True, team_name=current_match['home_team'],
-    team_gk_saves=h_team_gk_saves, team_goals_conceded=int(current_match.get('away_score', 0) or 0)
-)
-away_subs_lineup = build_subs_data(
-    away_players, away_events, is_home=False, team_name=current_match['away_team'],
-    team_gk_saves=a_team_gk_saves, team_goals_conceded=int(current_match.get('home_score', 0) or 0)
+(
+    home_players, away_players,
+    home_lineup, away_lineup,
+    h_formation_str, a_formation_str,
+    home_subs_lineup, away_subs_lineup,
+) = _compute_match_lineups_cached(
+    str(current_match.get('id')),
+    str(src_type or ''),
+    int(len(match_events)),
+    str(current_match['home_team']),
+    str(current_match['away_team']),
+    int(current_match.get('home_score', 0) or 0),
+    int(current_match.get('away_score', 0) or 0),
+    h_team_gk_saves,
+    a_team_gk_saves,
+    home_events,
+    away_events,
+    custom_lineups,
 )
 
 all_lineup = home_lineup + away_lineup
@@ -3558,7 +4356,7 @@ def _goal_scorer_rows(goals):
         full_name = str(goal.get('player') or 'Chưa rõ cầu thủ').strip()
         display_name = html.escape(_player_display_name(full_name))
         full_name_attr = html.escape(full_name, quote=True)
-        minute = html.escape(str(goal.get('minute', '?')))
+        minute = html.escape(str(goal.get('minute_display') or goal.get('minute', '?')))
         og_tag = ' <span style="color:#F97316;font-size:11px;font-weight:900;">(OG)</span>' if goal.get('is_og') else ''
         rows.append(
             '<div class="match-goal-row">'
@@ -3598,83 +4396,212 @@ pen_badge_html = (
 )
 
 if active_workspace == "ws_live":
-    render_live_and_multimatch_workspace(catalog, current_match, match_events, wc2018_events_full, wc2018_shots_df)
-    st.stop()
-elif active_workspace == "ws_hub":
-    render_tournament_hub_workspace(catalog, wc2018_events_full, wc2018_shots_df, _player_display_name)
-    st.stop()
-elif active_workspace == "ws_ai":
-    render_compare_ai_and_architecture_workspace(
-        all_selectable_players,
-        match_events,
+    render_live_and_multimatch_workspace(
+        catalog,
         current_match,
-        match_stats_df,
-        wc2018_events_full,
+        match_events,
+        pd.DataFrame(),
         wc2018_shots_df,
-        render_fotmob_stat_bar,
+        all_selectable_players=all_selectable_players,
+        render_stat_bar_fn=render_fotmob_stat_bar,
     )
     st.stop()
+
+home_crest_svg = _make_team_crest_svg(current_match['home_team'], size=44, logo_url=str(current_match.get("home_logo") or ""))
+away_crest_svg = _make_team_crest_svg(current_match['away_team'], size=44, logo_url=str(current_match.get("away_logo") or ""))
+ft_status_lbl = "PEN" if current_match.get("pen_home") is not None else ("HẾT GIỜ · AET" if _has_extra_time(match_events) else "HẾT GIỜ · FT")
+
+def _goal_inline_items(goals, align="right"):
+    if not goals:
+        return ""
+    items = []
+    for g in goals:
+        dn = html.escape(_player_display_name(str(g.get("player") or "").strip()))
+        mn = html.escape(str(g.get("minute_display") or g.get("minute", "?")))
+        og = ' <span style="color:#F59E0B;font-size:10.5px;font-weight:800;">(OG)</span>' if g.get("is_og") else ""
+        if align == "right":
+            items.append(f'<div class="goal-item"><span class="goal-player-name">{dn}{og}</span><span class="goal-min-tag">{mn}′</span></div>')
+        else:
+            items.append(f'<div class="goal-item"><span class="goal-min-tag">{mn}′</span><span class="goal-player-name">{dn}{og}</span></div>')
+    return "".join(items)
+
+goals_inline_block = ""
+if home_scorers or away_scorers:
+    goals_inline_block = (
+        '<div class="match-goals-inline">'
+        f'<div class="goals-col-home">{_goal_inline_items(home_scorers, "right")}</div>'
+        '<div class="goals-col-mid"><span class="goals-mid-badge">⚽</span></div>'
+        f'<div class="goals-col-away">{_goal_inline_items(away_scorers, "left")}</div>'
+        '</div>'
+    )
+
+motm_clean_html = (
+    f'<span>MOTM: <b style="color:#34D399;">{html.escape(motm_player["display_name"])} ({motm_player["rating"]}★)</b></span>'
+    if motm_player else ""
+)
+
+if active_workspace == "ws_match" and (st.session_state.get("return_to_ws_today") or _daily_mc_loaded):
+    _playlist = [dict(x) for x in (st.session_state.get("daily_day_playlist") or []) if isinstance(x, dict)]
+    _opt_keys = []
+    _item_by_opt = {}
+    _lbl_by_opt = {}
+    _cur_opt_key = None
+    _cur_fx_eid = str(_daily_mc_fixture.get("espn_event_id") or "") if isinstance(_daily_mc_fixture, dict) else ""
+    _cur_fx_uid = str(_daily_mc_fixture.get("upcoming_match_id") or "") if isinstance(_daily_mc_fixture, dict) else ""
+    _cur_fx_vn = str(_daily_mc_fixture.get("vn_date") or "")[:10] if isinstance(_daily_mc_fixture, dict) else ""
+
+    for idx_pl, pm in enumerate(_playlist):
+        base_k = str(pm.get("espn_event_id") or pm.get("upcoming_match_id") or f"{pm.get('home_team','')}|{pm.get('away_team','')}|{pm.get('vn_date','')}")
+        ok = base_k if base_k not in _item_by_opt else f"{base_k}_{idx_pl}"
+        _opt_keys.append(ok)
+        _item_by_opt[ok] = pm
+        pst = str(pm.get("state") or "pre")
+        if pst == "in":
+            sc_s = f"{pm.get('home_score')}-{pm.get('away_score')}" if pm.get("home_score") is not None else "vs"
+            _lbl_by_opt[ok] = f"🔴 {pm.get('home_team','')} {sc_s} {pm.get('away_team','')} ({pm.get('status_detail','')})"
+        elif pst == "post":
+            sc_s = f"{pm.get('home_score')}-{pm.get('away_score')}" if pm.get("home_score") is not None else "FT"
+            _lbl_by_opt[ok] = f"✅ {pm.get('home_team','')} {sc_s} {pm.get('away_team','')}"
+        else:
+            t_tag = pm.get("vn_time") or str(pm.get("vn_date") or "")[5:]
+            _lbl_by_opt[ok] = f"⏰ {pm.get('home_team','')} vs {pm.get('away_team','')} ({t_tag})"
+
+        if _cur_opt_key is None:
+            if _daily_mc_loaded:
+                if (_cur_fx_eid and str(pm.get("espn_event_id") or "") == _cur_fx_eid) or (
+                    not _cur_fx_eid and _cur_fx_uid and str(pm.get("upcoming_match_id") or "") == _cur_fx_uid
+                ) or (
+                    pm.get("home_team") == current_match.get("home_team")
+                    and pm.get("away_team") == current_match.get("away_team")
+                    and str(pm.get("vn_date") or "")[:10] == _cur_fx_vn
+                ):
+                    _cur_opt_key = ok
+            elif pm.get("home_team") == current_match.get("home_team") and pm.get("away_team") == current_match.get("away_team"):
+                _cur_opt_key = ok
+
+    def _on_mc_quick_switch():
+        chosen_k = st.session_state.get("mc_quick_day_switch")
+        chosen_m = _item_by_opt.get(chosen_k)
+        if not chosen_m:
+            return
+        cat_r = chosen_m.get("catalog_ref")
+        if cat_r and chosen_m.get("state") == "post":
+            st.session_state.pop("daily_match_center_fixture", None)
+            st.session_state["jump_comp"] = cat_r[0]
+            st.session_state["jump_match_label"] = cat_r[1]
+        else:
+            st.session_state["daily_match_center_fixture"] = dict(chosen_m)
+        st.session_state["return_to_ws_today"] = True
+        st.session_state["pending_workspace"] = "ws_match"
+
+    _back_cols = st.columns([1.35, 1.95, 1.0, 1.25], gap="small")
+    if _back_cols[0].button("← Quay lại Lịch Đấu Hôm Nay", key="mc_back_to_today", width="stretch"):
+        st.session_state.pop("daily_match_center_fixture", None)
+        st.session_state.pop("return_to_ws_today", None)
+        st.session_state["pending_workspace"] = "ws_today"
+        st.rerun()
+
+    if len(_opt_keys) > 1:
+        if _cur_opt_key in _opt_keys and st.session_state.get("mc_quick_day_switch") != _cur_opt_key:
+            st.session_state["mc_quick_day_switch"] = _cur_opt_key
+        elif st.session_state.get("mc_quick_day_switch") not in _opt_keys:
+            st.session_state["mc_quick_day_switch"] = _opt_keys[0]
+        _back_cols[1].selectbox(
+            "Chuyển nhanh trận khác:",
+            _opt_keys,
+            format_func=lambda k: _lbl_by_opt.get(k, k),
+            key="mc_quick_day_switch",
+            label_visibility="collapsed",
+            on_change=_on_mc_quick_switch,
+        )
+
+    if current_match.get("live_state") == "in":
+        if _back_cols[2].button("🔄 Cập nhật Live", key="mc_refresh_live", type="primary", width="stretch"):
+            st.session_state["daily_mc_force_refresh"] = True
+            st.rerun()
+        if current_match.get("fetched_vn"):
+            st.caption(f"🔴 Đồng bộ trực tiếp ESPN · {current_match['fetched_vn']}")
+    if _daily_mc_loaded and (_meta_ov.get("upcoming_match_id") or current_match.get("live_state") in ("in", "pre")):
+        if _back_cols[3].button("🔮 Mở Pre-Match Lab AI", key="mc_jump_prematch", width="stretch"):
+            if _meta_ov.get("upcoming_match_id"):
+                st.session_state["jump_upcoming_match_id"] = str(_meta_ov["upcoming_match_id"])
+            else:
+                st.session_state["jump_custom_home"] = current_match["home_team"]
+                st.session_state["jump_custom_away"] = current_match["away_team"]
+                st.session_state["prematch_tabs_sel"] = "⚡ Ghép 2 Đội"
+            st.session_state["pending_workspace"] = "ws_prematch"
+            st.rerun()
+
+if current_match.get("kickoff_disp"):
+    match_date_label = html.escape(str(current_match["kickoff_disp"]))
+
+_lv_state = current_match.get("live_state", "")
+_pill_inline_css = ""
+_pill_label = ft_status_lbl
+if current_match.get("live_status_badge"):
+    _pill_label = html.escape(str(current_match["live_status_badge"]))
+    if _lv_state == "in":
+        _pill_inline_css = ' style="background:rgba(239,68,68,0.2);border-color:rgba(239,68,68,0.55);color:#FCA5A5;"'
+    elif _lv_state == "pre":
+        _pill_inline_css = ' style="background:rgba(56,189,248,0.16);border-color:rgba(56,189,248,0.45);color:#7DD3FC;"'
+
+if current_match.get("is_upcoming_preview"):
+    _center_score_html = (
+        '<div class="score-vs-text">VS</div>'
+        f'<div class="score-sub-note">Dự báo AI · xG {h_hdr_xg}–{a_hdr_xg}</div>'
+    )
+else:
+    _center_score_html = (
+        f'<div class="score-numbers"><span>{current_match["home_score"]}</span>'
+        f'<span class="score-sep">–</span><span>{current_match["away_score"]}</span></div>{pen_badge_html}'
+    )
 
 st.markdown(_compact_html(f"""
 <div class="match-header-card">
     <div class="match-top-meta">
-        <div style="color: #38BDF8; font-weight: 800; font-size: 13.5px; letter-spacing: 0.8px; text-align: left;">
-            🏆 {stage_label}
-        </div>
-        <div style="color: #E2E8F0; font-size: 13px; font-weight: 700; white-space: nowrap; text-align: center;">
-            📅 {match_date_label}
-        </div>
-        <div style="color: #94A3B8; font-size: 13px; text-align: right;">
-            🏟️ {stadium_label}
-        </div>
+        <div style="color:#38BDF8;font-weight:800;letter-spacing:0.05em;">{stage_label}</div>
+        <span class="match-status-pill"{_pill_inline_css}>{_pill_label}</span>
+        <div style="color:#94A3B8;font-weight:600;">{match_date_label} &nbsp;·&nbsp; {stadium_label}</div>
     </div>
     <div class="match-score-row">
         <div class="match-team-col home">
             <div class="match-team-name home">
-                <span>🔵</span><span>{home_team_label}</span>
+                <span>{home_team_label}</span>
+                {home_crest_svg}
             </div>
-            <div class="team-meta-pills">
-                <span class="team-meta-pill home-accent">xG: {h_hdr_xg}</span>
-                <span class="team-meta-pill">Kiểm soát: {h_hdr_pos}</span>
-                <span class="team-meta-pill">Sơ đồ: {h_formation_str}</span>
-                <span class="team-meta-pill">ĐTB: {h_avg_rating:.2f}★</span>
+            <div class="team-sub-stats" style="justify-content:flex-end;">
+                <span class="team-sub-chip home-xg">xG {h_hdr_xg}</span>
+                <span class="team-sub-chip">{h_hdr_pos}</span>
+                <span class="team-sub-chip">{h_formation_str}</span>
+                <span class="team-sub-chip">★ {h_avg_rating:.2f}</span>
             </div>
         </div>
-        <div class="score-badge">
-            <div class="score-numbers">
-                <span class="score-digit home">{current_match['home_score']}</span>
-                <span class="score-sep">-</span>
-                <span class="score-digit away">{current_match['away_score']}</span>
-            </div>
-            {pen_badge_html}
+        <div class="score-center-box">
+            {_center_score_html}
         </div>
         <div class="match-team-col away">
             <div class="match-team-name away">
-                <span>{away_team_label}</span><span>🔴</span>
+                {away_crest_svg}
+                <span>{away_team_label}</span>
             </div>
-            <div class="team-meta-pills">
-                <span class="team-meta-pill away-accent">xG: {a_hdr_xg}</span>
-                <span class="team-meta-pill">Kiểm soát: {a_hdr_pos}</span>
-                <span class="team-meta-pill">Sơ đồ: {a_formation_str}</span>
-                <span class="team-meta-pill">ĐTB: {a_avg_rating:.2f}★</span>
+            <div class="team-sub-stats" style="justify-content:flex-start;">
+                <span class="team-sub-chip away-xg">xG {a_hdr_xg}</span>
+                <span class="team-sub-chip">{a_hdr_pos}</span>
+                <span class="team-sub-chip">{a_formation_str}</span>
+                <span class="team-sub-chip">★ {a_avg_rating:.2f}</span>
             </div>
         </div>
     </div>
-    <div class="match-goal-lists">
-        <div class="match-goal-side home" aria-label="Bàn thắng đội {home_team_label}">
-            <div class="match-goal-team">BÀN THẮNG · {home_team_label}</div>
-            <div class="match-goal-rows">{home_scorers_html}</div>
-        </div>
-        <div class="match-goal-side away" aria-label="Bàn thắng đội {away_team_label}">
-            <div class="match-goal-team">BÀN THẮNG · {away_team_label}</div>
-            <div class="match-goal-rows">{away_scorers_html}</div>
-        </div>
-    </div>
-    <div style="text-align: center; color: #94A3B8; font-size: 13px; padding-top: 4px;">
-        👨‍⚖️ Trọng tài chính: <b style="color: #F8FAFC;">{referee_label}</b>{motm_html}
+    {goals_inline_block}
+    <div class="match-footer-meta">
+        <span>Trọng tài: <b style="color:#E2E8F0;">{referee_label}</b></span>
+        {motm_clean_html}
     </div>
 </div>
 """), unsafe_allow_html=True)
+
+if current_match.get("is_upcoming_preview"):
+    st.info("📋 Trận đấu sắp diễn ra — Đội hình sử dụng danh sách đăng ký Opta 2026/27 & ESPN mới nhất; các thông số, sơ đồ & bản đồ phản ánh mô phỏng dự báo AI Opta ML trước giờ bóng lăn.")
 
 
 render_match_action_bar(
@@ -3693,20 +4620,25 @@ render_match_action_bar(
 # 📊 CÁC TABS PHÂN TÍCH SOFASCORE CHUYÊN SÂU
 # ==========================================================
 
-tab_lineup, tab_stats, tab_shotmap, tab_player, tab_network, tab_ai_news = st.tabs([
-    tr("tab_lineup", ui_lang),
-    tr("tab_stats", ui_lang),
-    tr("tab_shotmap", ui_lang),
-    tr("tab_player", ui_lang),
-    tr("tab_network", ui_lang),
-    tr("tab_ai_news", ui_lang),
-])
+tab_lineup, tab_stats, tab_shotmap, tab_player, tab_network, tab_ai_news = st.tabs(
+    [
+        tr("tab_lineup", ui_lang),
+        tr("tab_stats", ui_lang),
+        tr("tab_shotmap", ui_lang),
+        tr("tab_player", ui_lang),
+        tr("tab_network", ui_lang),
+        tr("tab_ai_news", ui_lang),
+    ],
+    key=f"match_center_tabs_{ui_lang}",
+    on_change="rerun",
+)
 
 # ----------------------------------------------------------
-# TAB 1: ĐỘI HÌNH RA SÂN & SƠ ĐỒ CHIẾN THUẬT
+# TAB 1: ĐỘI HÌNH RA SÂN & SƠ ĐỒ CHIẾN THUẬT (FRAGMENT TỨC THÌ)
 # ----------------------------------------------------------
-with tab_lineup:
-    st.subheader("📋 Sơ Đồ Chiến Thuật & Danh Sách Cầu Thủ Kèm Điểm Số")
+@st.fragment
+def _render_pitch_and_detail_fragment():
+    st.markdown('<div class="section-hdr"><span class="section-hdr-title">Sơ đồ chiến thuật & Điểm cầu thủ</span><span class="section-hdr-sub">Nhấn vào bất kỳ cầu thủ nào trên sân để xem hồ sơ chi tiết</span></div>', unsafe_allow_html=True)
 
     best_p = next((p for p in all_selectable_players if p['rating'] == max_rating), all_selectable_players[0] if all_selectable_players else None)
     match_sel_key = f"sel_player_{current_match['id']}"
@@ -3725,7 +4657,7 @@ with tab_lineup:
         st.session_state[match_sel_key] = active_player_name
         st.session_state[sb_key] = active_player_name
 
-    col_pitch, col_detail = st.columns([1.52, 1.48], gap="medium")
+    col_pitch, col_detail = st.columns([1.76, 1.24], gap="medium")
 
     with col_pitch:
         fig_pitch = go.Figure()
@@ -3751,19 +4683,19 @@ with tab_lineup:
         fig_pitch.add_shape(type="rect", x0=120, y0=36, x1=122.2, y1=44, line=dict(color="#FF4D6D", width=2), fillcolor="rgba(255,77,109,0.16)", layer="below")
 
         fig_pitch.add_annotation(
-            x=28, y=84.2, text=f"🔵 {current_match['home_team'].upper()} ({h_formation_str}) • {h_avg_rating:.2f}★",
+            x=29, y=85.0, text=f"🔵 {current_match['home_team'].upper()} ({h_formation_str}) • {h_avg_rating:.2f}★",
             showarrow=False, font=dict(size=11.5, color="#7DD3FC", family="Arial Black, sans-serif"),
             bgcolor="rgba(15, 23, 42, 0.88)", bordercolor="rgba(56, 189, 248, 0.48)", borderwidth=1, borderpad=4
         )
         fig_pitch.add_annotation(
-            x=92, y=84.2, text=f"{current_match['away_team'].upper()} ({a_formation_str}) • {a_avg_rating:.2f}★ 🔴",
+            x=91, y=85.0, text=f"{current_match['away_team'].upper()} ({a_formation_str}) • {a_avg_rating:.2f}★ 🔴",
             showarrow=False, font=dict(size=11.5, color="#FDA4AF", family="Arial Black, sans-serif"),
             bgcolor="rgba(15, 23, 42, 0.88)", bordercolor="rgba(255, 77, 109, 0.48)", borderwidth=1, borderpad=4
         )
 
         def _pitch_player_label(player, is_motm):
             event_markers = []
-            event_markers.extend("⚽" for _ in range(min(player.get('goals_count', 0), 8)))
+            event_markers.extend(["⚽"] * player.get('goals_count', 0))
             for count, symbol in (
                 (player.get('assists_count', 0), '👟'),
                 (player.get('yellow_cards', 0), '🟨'),
@@ -3778,7 +4710,7 @@ with tab_lineup:
             star = " ★" if is_motm else ""
             return (
                 f"<b>{player['rating']}{star}</b>{marker_html}<br>"
-                f"<span style='font-size:11px; color:#FFFFFF;'>{html.escape(player['short_name'])}</span>"
+                f"<span style='font-size:10.5px; color:#F8FAFC;'>{html.escape(player['short_name'])}</span>"
             )
 
         # Cầu thủ đội nhà (không hiện tooltip khi di chuột lướt qua, chỉ chọn khi bấm trực tiếp)
@@ -3786,18 +4718,19 @@ with tab_lineup:
             is_sel = (p['name'] == active_player_name)
             r_col = "#00D66C" if p['rating'] >= 7.5 else ("#FF9800" if p['rating'] >= 6.5 else "#F44336")
             border_col = "#00F0FF" if is_sel else r_col
-            border_w = 4.2 if is_sel else 2.8
+            border_w = 3.5 if is_sel else 2.4
             fig_pitch.add_layout_image(
                 source=p['photo'], xref="x", yref="y", x=p['x'], y=p['y'],
-                sizex=6.8 if is_sel else 6.1, sizey=6.8 if is_sel else 6.1,
+                sizex=7.5 if is_sel else 6.5, sizey=7.5 if is_sel else 6.5,
                 xanchor="center", yanchor="middle",
                 sizing="contain", layer="above"
             )
             fig_pitch.add_trace(go.Scatter(
                 x=[p['x']], y=[p['y']], mode='markers+text',
-                marker=dict(size=44 if is_sel else 40, color="rgba(0,0,0,0.01)", line=dict(color=border_col, width=border_w)),
+                marker=dict(size=41 if is_sel else 35, color="rgba(0,0,0,0.01)", line=dict(color=border_col, width=border_w)),
                 text=[_pitch_player_label(p, p['rating'] == max_rating)],
                 textposition="top center",
+                textfont=dict(size=10.5, color="#FFFFFF"),
                 customdata=[p['name']],
                 hoverinfo="none",
                 selected=dict(marker=dict(opacity=1.0)),
@@ -3809,18 +4742,19 @@ with tab_lineup:
             is_sel = (p['name'] == active_player_name)
             r_col = "#00D66C" if p['rating'] >= 7.5 else ("#FF9800" if p['rating'] >= 6.5 else "#F44336")
             border_col = "#00F0FF" if is_sel else r_col
-            border_w = 4.2 if is_sel else 2.8
+            border_w = 3.5 if is_sel else 2.4
             fig_pitch.add_layout_image(
                 source=p['photo'], xref="x", yref="y", x=p['x'], y=p['y'],
-                sizex=6.8 if is_sel else 6.1, sizey=6.8 if is_sel else 6.1,
+                sizex=7.5 if is_sel else 6.5, sizey=7.5 if is_sel else 6.5,
                 xanchor="center", yanchor="middle",
                 sizing="contain", layer="above"
             )
             fig_pitch.add_trace(go.Scatter(
                 x=[p['x']], y=[p['y']], mode='markers+text',
-                marker=dict(size=44 if is_sel else 40, color="rgba(0,0,0,0.01)", line=dict(color=border_col, width=border_w)),
+                marker=dict(size=41 if is_sel else 35, color="rgba(0,0,0,0.01)", line=dict(color=border_col, width=border_w)),
                 text=[_pitch_player_label(p, p['rating'] == max_rating)],
                 textposition="top center",
+                textfont=dict(size=10.5, color="#FFFFFF"),
                 customdata=[p['name']],
                 hoverinfo="none",
                 selected=dict(marker=dict(opacity=1.0)),
@@ -3828,9 +4762,9 @@ with tab_lineup:
             ))
 
         fig_pitch.update_layout(
-            xaxis=dict(range=[-4, 124], showgrid=False, zeroline=False, showticklabels=False, fixedrange=True),
-            yaxis=dict(range=[-5, 88], showgrid=False, zeroline=False, showticklabels=False, fixedrange=True),
-            height=515, margin=dict(l=4, r=4, t=8, b=6),
+            xaxis=dict(range=[-3.5, 123.5], showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, constrain="domain"),
+            yaxis=dict(range=[-3.0, 89.0], showgrid=False, zeroline=False, showticklabels=False, fixedrange=True, scaleanchor="x", scaleratio=1, constrain="domain"),
+            height=485, margin=dict(l=4, r=4, t=8, b=6),
             plot_bgcolor="#131714", paper_bgcolor="#0D100E", showlegend=False,
             clickmode="event+select", dragmode=False
         )
@@ -3850,7 +4784,7 @@ with tab_lineup:
                     st.session_state[sb_key] = clicked_name
                     st.session_state[tab4_sel_key] = clicked_name
                     st.session_state[pitch_ver_key] = st.session_state.get(pitch_ver_key, 0) + 1
-                    st.rerun()
+                    st.rerun(scope="fragment")
 
         st.markdown(
             '<div style="display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 12px; align-items:center;'
@@ -3904,6 +4838,9 @@ with tab_lineup:
 
     with col_detail:
         player_names = [p['name'] for p in all_selectable_players]
+        if not player_names:
+            st.info("Dữ liệu trận này chưa có danh sách cầu thủ.")
+            return
         labels_map = {
             p['name']: f"{'🔄 ' if p.get('is_sub') else ''}{p['display_name']} ({p.get('team_name', '')} • {'Dự bị' if p.get('is_sub') else p['pos']} • {p['rating']}★)"
             for p in all_selectable_players
@@ -3929,6 +4866,7 @@ with tab_lineup:
 
         render_sofascore_player_panel(p_to_render, p_events_sel, current_match, max_rating=max_rating, match_events=match_events)
 
+def _render_subs_and_bench_section():
     st.markdown('<div style="margin: 14px 0 8px; border-top: 1px solid #1E293B;"></div>', unsafe_allow_html=True)
     st.markdown("#### 👥 Thay người & Danh sách dự bị")
 
@@ -4157,16 +5095,14 @@ with tab_lineup:
 # ----------------------------------------------------------
 # TAB 2: THỐNG KÊ TRẬN ĐẤU (FOTMOB / SOFASCORE BARS)
 # ----------------------------------------------------------
-with tab_stats:
-    st.subheader("📊 Thống Kê So Sánh Chi Tiết Trận Đấu")
-
+def _render_tab_stats():
     home_passes = home_events[home_events['type_name'] == 'Pass'] if 'type_name' in home_events.columns else pd.DataFrame()
     away_passes = away_events[away_events['type_name'] == 'Pass'] if 'type_name' in away_events.columns else pd.DataFrame()
     home_summary = _pass_summary(home_passes)
     away_summary = _pass_summary(away_passes)
 
     h_col = "#38BDF8"
-    a_col = "#FF4D6D"
+    a_col = "#F43F5E"
 
     h_xg = _format_stat_val(home_source_stats, "xg", 2)
     a_xg = _format_stat_val(away_source_stats, "xg", 2)
@@ -4197,23 +5133,16 @@ with tab_stats:
     h_pass_acc = f"{home_summary['completed']:,} ({home_summary['accuracy']:.1f}%)" if home_summary['accuracy'] is not None else "Chưa có"
     a_pass_acc = f"{away_summary['completed']:,} ({away_summary['accuracy']:.1f}%)" if away_summary['accuracy'] is not None else "Chưa có"
 
-    st.markdown("#### 📌 Tổng quan trận đấu")
-    with st.container(horizontal=True, gap="small"):
-        st.metric("Tỷ số · Nhà / khách", f"{current_match['home_score']} — {current_match['away_score']}", border=True)
-        st.metric("xG · Nhà / khách", f"{h_xg} — {a_xg}", border=True)
-        st.metric("Kiểm soát bóng · Nhà / khách", f"{h_pos} — {a_pos}", border=True)
-        st.metric("Sút trúng đích · Nhà / khách", f"{h_shots_on} — {a_shots_on}", border=True)
-
-    st.markdown("#### 📈 So sánh các chỉ số trọng tâm (Top Stats)")
+    st.markdown('<div class="section-hdr"><span class="section-hdr-title">Chỉ số trọng tâm trận đấu (Top Stats)</span><span class="section-hdr-sub">Đội dẫn trước được làm nổi bật</span></div>', unsafe_allow_html=True)
     stat_bars_html = (
-        f'<div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 18px; margin-bottom: 14px; background: rgba(15, 23, 42, 0.85); border-radius: 10px; border: 1px solid #26354D;">'
-        f'<span style="color: {h_col}; font-weight: 800; font-size: 15px;">🔵 {home_team_label}</span>'
-        f'<span style="color: #94A3B8; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;">Đội dẫn trước được tô sáng</span>'
-        f'<span style="color: {a_col}; font-weight: 800; font-size: 15px;">{away_team_label} 🔴</span>'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 14px;margin-bottom:12px;background:rgba(9,13,22,0.7);border-radius:9px;border:1px solid rgba(148,163,184,0.12);">'
+        f'<span style="color:{h_col};font-weight:800;font-size:13.5px;">{home_team_label}</span>'
+        f'<span style="color:#64748B;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;">MATCH COMPARISON</span>'
+        f'<span style="color:{a_col};font-weight:800;font-size:13.5px;">{away_team_label}</span>'
         f'</div>'
     )
     stat_bars_html += render_fotmob_stat_bar("Bàn thắng kỳ vọng (xG)", h_xg if h_xg != "Chưa có dữ liệu" else 1, a_xg if a_xg != "Chưa có dữ liệu" else 1, h_xg, a_xg, h_col, a_col)
-    stat_bars_html += render_fotmob_stat_bar("Tỷ lệ kiểm soát bóng (%)", h_pos.replace("%", "") if h_pos != "Chưa có dữ liệu" else 50, a_pos.replace("%", "") if a_pos != "Chưa có dữ liệu" else 50, h_pos, a_pos, h_col, a_col)
+    stat_bars_html += render_fotmob_stat_bar("Kiểm soát bóng (%)", h_pos.replace("%", "") if h_pos != "Chưa có dữ liệu" else 50, a_pos.replace("%", "") if a_pos != "Chưa có dữ liệu" else 50, h_pos, a_pos, h_col, a_col)
     stat_bars_html += render_fotmob_stat_bar("Tổng số cú sút", h_shots if h_shots != "Chưa có dữ liệu" else 1, a_shots if a_shots != "Chưa có dữ liệu" else 1, h_shots, a_shots, h_col, a_col)
     stat_bars_html += render_fotmob_stat_bar("Sút trúng đích", h_shots_on if h_shots_on != "Chưa có dữ liệu" else 1, a_shots_on if a_shots_on != "Chưa có dữ liệu" else 1, h_shots_on, a_shots_on, h_col, a_col)
     stat_bars_html += render_fotmob_stat_bar("Chuyền chính xác", home_summary['completed'] or 1, away_summary['completed'] or 1, h_pass_acc, a_pass_acc, h_col, a_col)
@@ -4225,7 +5154,7 @@ with tab_stats:
     with st.container(border=True):
         st.markdown(stat_bars_html, unsafe_allow_html=True)
 
-    st.markdown("#### 🔍 Phân Tích Chuyên Sâu Theo Nhóm Chỉ Số (FotMob Pro Breakdown)")
+    st.markdown('<div class="section-hdr" style="margin-top:16px;"><span class="section-hdr-title">Phân tích chuyên sâu theo nhóm chỉ số</span><span class="section-hdr-sub">Tấn công · Chuyền bóng · Expected Threat (xT)</span></div>', unsafe_allow_html=True)
 
     def _team_pair_count(summary, total_key, completed_key):
         total = summary[total_key]
@@ -4264,8 +5193,9 @@ with tab_stats:
 # ----------------------------------------------------------
 # TAB 3: BẢN ĐỒ SÚT BÓNG (SHOT MAP)
 # ----------------------------------------------------------
-with tab_shotmap:
-    st.subheader("🎯 Bản Đồ Dứt Điểm Toàn Trận & Đường Đua xG (Interactive Shot Map)")
+@st.fragment
+def _render_tab_shotmap():
+    st.markdown('<div class="section-hdr"><span class="section-hdr-title">Bản đồ dứt điểm & Đường đua xG</span><span class="section-hdr-sub">Kích thước điểm tỷ lệ thuận với giá trị xG</span></div>', unsafe_allow_html=True)
     with st.container(border=True):
         shot_filter = st.selectbox(
             "🎛️ Lọc cú sút trên bản đồ:",
@@ -4277,12 +5207,14 @@ with tab_shotmap:
 # ----------------------------------------------------------
 # TAB 4: PHÂN TÍCH CẦU THỦ (HEATMAP & PASS MAP)
 # ----------------------------------------------------------
-with tab_player:
-    st.subheader("🔥 Phân Tích Chuyên Sâu Cầu Thủ: Heatmap Hoạt Động & Bản Đồ Chuyền")
+@st.fragment
+def _render_tab_player():
+    st.markdown('<div class="section-hdr"><span class="section-hdr-title">Phân tích cá nhân · Heatmap & Bản đồ chuyền</span><span class="section-hdr-sub">Hướng tấn công chuẩn hóa Trái → Phải</span></div>', unsafe_allow_html=True)
 
     all_match_players = [p['name'] for p in all_selectable_players] if all_selectable_players else (home_players + away_players)
     if not all_match_players:
-        all_match_players = ["Cầu thủ"]
+        st.info("Dữ liệu trận này chưa có tên cầu thủ để phân tích.")
+        return
     player_meta_lookup = {p['name']: p for p in all_selectable_players}
 
     with st.container(border=True):
@@ -4328,7 +5260,7 @@ with tab_player:
         f'</div>'
         f'<div style="display: flex; align-items: center; gap: 14px;">'
         f'<div style="text-align: right;">'
-        f'<div style="color: #94A3B8; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em;">Sofascore Rating</div>'
+        f'<div style="color: #94A3B8; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em;">NCKH TUD65 Rating</div>'
         f'<div style="color: #CBD5E1; font-size: 12px; margin-top: 2px;">⚽ {sel_goals} Bàn &nbsp;|&nbsp; 👟 {sel_assists} Kiến tạo</div>'
         f'</div>'
         f'<div style="background: {sel_r_col}; color: #000000; font-size: 24px; font-weight: 900; padding: 8px 16px; border-radius: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.35);">{selected_rating:.1f}★</div>'
@@ -4337,12 +5269,11 @@ with tab_player:
         unsafe_allow_html=True
     )
 
-    activity_events = p_events[p_events['location_x'].notna() & p_events['location_y'].notna()]
     pass_accuracy_text = "Chưa có" if pass_stats['accuracy'] is None else f"{pass_stats['completed']:,}/{pass_stats['attempted']:,} ({pass_stats['accuracy']:.1f}%)"
     progressive_text = "Chưa có" if pass_stats['progressive'] is None else f"{pass_stats['progressive_completed'] or 0:,}/{pass_stats['progressive']:,}"
 
     with st.container(horizontal=True, gap="small"):
-        st.metric("Điểm SofaScore", f"{selected_rating:.1f} ★", border=True)
+        st.metric("Điểm NCKH TUD65", f"{selected_rating:.1f} ★", border=True)
         st.metric("Chuyền chính xác", pass_accuracy_text, border=True)
         st.metric("xT từ đường chuyền", _display_decimal(pass_stats['xt'], 3, signed=True), border=True)
         st.metric("Key Passes (Tạo cơ hội)", _display_count(pass_stats['key_passes'] or 0), border=True)
@@ -4358,15 +5289,9 @@ with tab_player:
     with col_heat:
         with st.container(border=True):
             st.markdown(f"##### 🔥 Heatmap Hoạt Động — {_player_display_name(selected_player)}")
-            if {"location_x", "location_y"}.issubset(activity_events.columns):
-                coords_df = activity_events[["location_x", "location_y"]].copy()
-                coords_df["location_x"] = pd.to_numeric(coords_df["location_x"], errors="coerce")
-                coords_df["location_y"] = pd.to_numeric(coords_df["location_y"], errors="coerce")
-                coords_df = coords_df.dropna(subset=["location_x", "location_y"])
-                coords_df["location_x"] = coords_df["location_x"].clip(0, 120)
-                coords_df["location_y"] = coords_df["location_y"].clip(0, 80)
-            else:
-                coords_df = pd.DataFrame(columns=["location_x", "location_y"])
+            coords_df = p_events.reindex(columns=["location_x", "location_y"]).apply(pd.to_numeric, errors="coerce").dropna()
+            coords_df["location_x"] = coords_df["location_x"].clip(0, 120)
+            coords_df["location_y"] = coords_df["location_y"].clip(0, 80)
 
             if not coords_df.empty:
                 fig_heat = go.Figure()
@@ -4514,8 +5439,9 @@ with tab_player:
 # ----------------------------------------------------------
 # TAB 5: MẠNG LƯỚI PHỐI HỢP CHUYỀN BÓNG (PASS NETWORK)
 # ----------------------------------------------------------
-with tab_network:
-    st.subheader("🕸️ Mạng Lưới Phối Hợp Chuyền Bóng Chiến Thuật (Passing Network)")
+@st.fragment
+def _render_tab_network():
+    st.markdown('<div class="section-hdr"><span class="section-hdr-title">Mạng lưới phối hợp chuyền bóng</span><span class="section-hdr-sub">Vị trí chạm bóng trung bình & mật độ liên kết</span></div>', unsafe_allow_html=True)
     match_passes = match_events[match_events['type_name'] == 'Pass'] if 'type_name' in match_events.columns else pd.DataFrame()
 
     with st.container(border=True):
@@ -4706,6 +5632,89 @@ with tab_network:
 # ----------------------------------------------------------
 # TAB 6: AI MONTE CARLO DỰ ĐOÁN, BÌNH LUẬN TRỰC TIẾP & BẢN TIN
 # ----------------------------------------------------------
-with tab_ai_news:
+def _render_tab_ai_news():
+    pm_ai = current_match.get("prematch_ai_summary")
+    if isinstance(pm_ai, dict) and pm_ai.get("prob_H") is not None:
+        od = pm_ai.get("odds") or {}
+        odds_line = (
+            f' &nbsp;·&nbsp; <span style="color:#FACC15;">Kèo thị trường ({html.escape(str(od.get("provider") or "DraftKings"))}): '
+            f'<b>{od["mkt_prob_H"]:.1f}% / {od["mkt_prob_D"]:.1f}% / {od["mkt_prob_A"]:.1f}%</b></span>'
+            if od.get("mkt_prob_H") else ""
+        )
+        st.markdown(_compact_html(f"""
+        <div style="background:#0F172A;border:1px solid rgba(56,189,248,0.28);border-left:4px solid #38BDF8;border-radius:11px;padding:10px 14px;margin-bottom:12px;">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:12.5px;color:#E2E8F0;margin-bottom:7px;">
+                <span><b>🔮 Dự báo AI Trước Trận:</b> {home_team_label} <b style="color:#38BDF8;">{pm_ai['prob_H']:.1f}%</b> · Hòa <b>{pm_ai['prob_D']:.1f}%</b> · {away_team_label} <b style="color:#FF4D6D;">{pm_ai['prob_A']:.1f}%</b></span>
+                <span><b>📊 Dự báo xG:</b> {pm_ai['pred_home_goals']:.2f} - {pm_ai['pred_away_goals']:.2f}{odds_line}</span>
+            </div>
+            <div style="display:flex;height:10px;border-radius:999px;overflow:hidden;gap:2px;background:#090D16;">
+                <div style="width:{pm_ai['prob_H']:.1f}%;background:#38BDF8;"></div>
+                <div style="width:{pm_ai['prob_D']:.1f}%;background:#64748B;"></div>
+                <div style="width:{pm_ai['prob_A']:.1f}%;background:#FF4D6D;"></div>
+            </div>
+        </div>
+        """), unsafe_allow_html=True)
+
+    k_evs = current_match.get("espn_key_events") or []
+    comm = current_match.get("espn_commentary") or []
+    if k_evs or comm:
+        st.markdown("#### 🔴 Diễn Biến Thực Tế & Bình Luận Trực Tiếp (ESPN Live)")
+        c_ke, c_cm = st.columns([1.0, 1.15], gap="medium")
+        with c_ke:
+            with st.container(border=True):
+                st.markdown("**⏱️ Sự kiện chính trên sân**")
+                if not k_evs:
+                    st.caption("Chưa có sự kiện chính.")
+                else:
+                    show_ke = list(reversed(k_evs)) if current_match.get("live_state") == "in" else k_evs
+                    items_h = []
+                    for ke in show_ke[:25]:
+                        ico = "⚽" if ke.get("scoring_play") else ("🟥" if ke.get("is_red") else ("🟨" if ke.get("is_yellow") else ("🔄" if ke.get("is_sub") else "⏱️")))
+                        items_h.append(
+                            f'<div class="lv-evt-item"><span class="lv-evt-clk">{html.escape(str(ke.get("clock") or "•"))}</span>'
+                            f'<span>{ico} {html.escape(str(ke.get("text") or ke.get("type_text") or ""))}</span></div>'
+                        )
+                    st.markdown(f'<div class="lv-comm-feed">{"".join(items_h)}</div>', unsafe_allow_html=True)
+        with c_cm:
+            with st.container(border=True):
+                st.markdown("**🎙️ Tường thuật trực tiếp từng phút**")
+                if not comm:
+                    st.caption("Chưa có tường thuật từng phút.")
+                else:
+                    show_cm = list(reversed(comm)) if current_match.get("live_state") == "in" else comm
+                    cm_h = [
+                        f'<div class="lv-evt-item"><span class="lv-evt-clk">{html.escape(str(cm.get("clock") or "•"))}</span>'
+                        f'<span>{html.escape(str(cm.get("text") or ""))}</span></div>'
+                        for cm in show_cm[:60]
+                    ]
+                    st.markdown(f'<div class="lv-comm-feed">{"".join(cm_h)}</div>', unsafe_allow_html=True)
+
     render_match_ai_timeline_news_tab(match_events, current_match, all_selectable_players)
+
+
+# Chỉ render đúng Tab đang mở -> giảm 6x CPU & băng thông cho server nhiều người dùng!
+with tab_lineup:
+    if tab_lineup.open:
+        _render_pitch_and_detail_fragment()
+        _render_subs_and_bench_section()
+
+with tab_stats:
+    if tab_stats.open:
+        _render_tab_stats()
+
+with tab_shotmap:
+    if tab_shotmap.open:
+        _render_tab_shotmap()
+
+with tab_player:
+    if tab_player.open:
+        _render_tab_player()
+
+with tab_network:
+    if tab_network.open:
+        _render_tab_network()
+
+with tab_ai_news:
+    if tab_ai_news.open:
+        _render_tab_ai_news()
 
