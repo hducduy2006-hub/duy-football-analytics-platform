@@ -7,6 +7,7 @@ import os
 import io
 import gzip
 import json
+import time
 import base64
 import hashlib
 import html
@@ -32,11 +33,14 @@ from pro_features import (
     render_compare_ai_and_architecture_workspace,
 )
 from prematch_research import (
+    _team_alias_key,
     build_prematch_research_package,
+    get_synced_espn_results,
     get_upcoming_catalog_entries,
     load_espn_live_cache,
     load_historical_xg_df,
     load_upcoming_fixtures_df,
+    match_espn_live_entry,
     render_prematch_research_workspace,
     render_single_upcoming_dossier,
 )
@@ -3182,6 +3186,10 @@ def _catalog_dir_signature():
         up_p = os.path.join(SAMPLE_DIR, "pro_analytics", "upcoming_fixtures.parquet")
         if os.path.isfile(up_p):
             entries.append(("pro_analytics/upcoming_fixtures.parquet", int(os.path.getmtime(up_p))))
+        ec_p = os.path.join(SAMPLE_DIR, "pro_analytics", "espn_live_cache.json")
+        if os.path.isfile(ec_p):
+            entries.append(("pro_analytics/espn_live_cache.json", int(os.path.getmtime(ec_p))))
+        entries.append(("espn_sync_bucket", int(time.time() // 180)))
     except OSError:
         pass
     return tuple(entries)
@@ -3356,10 +3364,39 @@ def _build_sofascore_catalog_cached(sig):
         except Exception:
             pass
 
-    # 2C. Nạp kho Trận Đấu Chưa Diễn Ra (1.928 Upcoming Fixtures mùa 2026/27 có sẵn AI 1X2 & xG dự báo)
+    # 2C. Nạp kho Trận Đấu Chưa Diễn Ra + Tự động đồng bộ kết quả ESPN vừa đá xong
     try:
+        played_sig_by_cat = {}
+        for c_k, c_list in catalog.items():
+            sigs = []
+            for m_old in c_list:
+                if m_old.get("is_upcoming"):
+                    continue
+                d_old = str(m_old.get("date") or "")[:10]
+                h_old = _team_alias_key(m_old.get("home_team", ""))
+                a_old = _team_alias_key(m_old.get("away_team", ""))
+                if d_old and h_old and a_old:
+                    sigs.append((h_old, a_old, d_old))
+            played_sig_by_cat[c_k] = sigs
+
         for up_item in get_upcoming_catalog_entries(days_ahead=240):
             cat_n = up_item.get("category") or "📁 Trận đấu mới nạp (Custom Ingested)"
+            if up_item.get("source_type") == "espn_live_result":
+                d_new = str(up_item.get("date") or "")[:10]
+                h_new = _team_alias_key(up_item.get("home_team", ""))
+                a_new = _team_alias_key(up_item.get("away_team", ""))
+                dup = False
+                if d_new and h_new and a_new:
+                    try:
+                        dt_new = pd.to_datetime(d_new).date()
+                        for h0, a0, d0 in played_sig_by_cat.get(cat_n, []):
+                            if h0 == h_new and a0 == a_new and abs((dt_new - pd.to_datetime(d0).date()).days) <= 1:
+                                dup = True
+                                break
+                    except Exception:
+                        pass
+                if dup:
+                    continue
             catalog.setdefault(cat_n, []).append(up_item)
     except Exception:
         pass
@@ -3736,6 +3773,15 @@ if isinstance(_daily_mc_fixture, dict) and _daily_mc_fixture:
 
 src_type = selected_match_meta.get("source_type")
 
+if not _daily_mc_loaded and src_type == "espn_live_result":
+    _fx_espn = selected_match_meta.get("espn_fixture") or {}
+    if isinstance(_fx_espn, dict) and _fx_espn and active_workspace == "ws_match":
+        match_events, custom_stats_dict, custom_lineups, match_squads, current_match, _meta_ov = build_full_match_center_bundle(
+            _fx_espn,
+            SAMPLE_DIR,
+        )
+        _daily_mc_loaded = True
+
 if not _daily_mc_loaded and src_type == "upcoming_fixture":
     if active_workspace == "ws_match":
         up_df_cur = load_upcoming_fixtures_df()
@@ -3743,25 +3789,41 @@ if not _daily_mc_loaded and src_type == "upcoming_fixture":
         matched_rows = up_df_cur[up_df_cur["match_id"].astype(str) == uid_cur] if (not up_df_cur.empty and uid_cur) else pd.DataFrame()
         if not matched_rows.empty:
             hist_cur = load_historical_xg_df()
-            espn_cur = load_espn_live_cache()
-            b_top1, b_top2 = st.columns([3.5, 1.5])
-            b_top1.caption("🔮 Bạn đang xem hồ sơ phân tích trận đấu **chưa diễn ra** (Pre-Match Research & AI Prediction).")
-            if b_top2.button("📡 Mở toàn bộ Pre-Match Lab & Bộ Quét Vòng Đấu", width="stretch", key="btn_open_full_prematch"):
-                st.session_state["jump_upcoming_match_id"] = uid_cur
-                st.session_state["pending_workspace"] = "ws_prematch"
-                st.rerun()
-            pkg_cur = build_prematch_research_package(matched_rows.iloc[0], hist_cur, espn_cur, fetch_live_intel=True)
-            render_single_upcoming_dossier(
-                pkg_cur,
-                save_pred_fn=save_user_prediction,
-                get_pred_fn=get_user_prediction,
-                auth_user=st.session_state.get("auth_user"),
-                key_prefix="sb_up",
+            espn_cur = get_synced_espn_results()
+            r0_cur = matched_rows.iloc[0]
+            espn_hit_cur = match_espn_live_entry(
+                str(r0_cur.get("home_team") or ""),
+                str(r0_cur.get("away_team") or ""),
+                str(r0_cur.get("match_date") or ""),
+                espn_cur,
+                max_day_diff=2,
             )
-            st.stop()
-    # Nếu người dùng đang ở tab Live/Hub/AI mà sidebar đang trỏ trận chưa đá -> fallback sang trận đã đá mới nhất làm ngữ cảnh
-    selected_match_meta = next((m for m in catalog.get("🏆 FIFA World Cup", []) if not m.get("is_upcoming")), catalog["🏆 FIFA World Cup"][0])
-    src_type = selected_match_meta.get("source_type")
+            if str(espn_hit_cur.get("state") or "").lower() in ("post", "in") and espn_hit_cur.get("home_score") is not None:
+                match_events, custom_stats_dict, custom_lineups, match_squads, current_match, _meta_ov = build_full_match_center_bundle(
+                    espn_hit_cur,
+                    SAMPLE_DIR,
+                )
+                _daily_mc_loaded = True
+            else:
+                b_top1, b_top2 = st.columns([3.5, 1.5])
+                b_top1.caption("🔮 Bạn đang xem hồ sơ phân tích trận đấu **chưa diễn ra** (Pre-Match Research & AI Prediction).")
+                if b_top2.button("📡 Mở toàn bộ Pre-Match Lab & Bộ Quét Vòng Đấu", width="stretch", key="btn_open_full_prematch"):
+                    st.session_state["jump_upcoming_match_id"] = uid_cur
+                    st.session_state["pending_workspace"] = "ws_prematch"
+                    st.rerun()
+                pkg_cur = build_prematch_research_package(r0_cur, hist_cur, espn_cur, fetch_live_intel=True)
+                render_single_upcoming_dossier(
+                    pkg_cur,
+                    save_pred_fn=save_user_prediction,
+                    get_pred_fn=get_user_prediction,
+                    auth_user=st.session_state.get("auth_user"),
+                    key_prefix="sb_up",
+                )
+                st.stop()
+    if not _daily_mc_loaded:
+        # Nếu người dùng đang ở tab Live/Hub/AI mà sidebar đang trỏ trận chưa đá -> fallback sang trận đã đá mới nhất làm ngữ cảnh
+        selected_match_meta = next((m for m in catalog.get("🏆 FIFA World Cup", []) if not m.get("is_upcoming")), catalog["🏆 FIFA World Cup"][0])
+        src_type = selected_match_meta.get("source_type")
 
 if not _daily_mc_loaded:
     current_match = {}

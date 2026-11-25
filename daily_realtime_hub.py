@@ -342,6 +342,35 @@ def _spawn_background_refresh():
     t.start()
 
 
+def _merge_with_synced_13_leagues(primary_fixtures: list[dict], force_refresh: bool = False) -> list[dict]:
+    """Supplement Top-7 window with finished/live results across all 13 leagues & past week backfill."""
+    try:
+        from prematch_research import get_synced_espn_results
+        synced = get_synced_espn_results(force_refresh=force_refresh)
+        extra_list = synced.get("live_fixtures") or []
+    except Exception:
+        return primary_fixtures
+
+    by_id: dict[str, dict] = {}
+    for item in primary_fixtures:
+        norm = _normalize_live_entry(item)
+        eid = str(norm.get("espn_event_id") or "").strip()
+        if eid:
+            by_id[eid] = norm
+
+    for ex in extra_list:
+        norm_ex = _normalize_live_entry(ex)
+        eid = str(norm_ex.get("espn_event_id") or "").strip()
+        if not eid:
+            continue
+        prev = by_id.get(eid)
+        if prev is None:
+            by_id[eid] = norm_ex
+        elif str(norm_ex.get("state") or "") == "post" and str(prev.get("state") or "") != "post":
+            by_id[eid] = norm_ex
+    return list(by_id.values())
+
+
 def get_realtime_board_data(force_refresh: bool = False) -> dict:
     """Process-shared stale-while-revalidate live ESPN board provider (safe for concurrent users)."""
     global _LAST_FORCE_MONO
@@ -357,6 +386,7 @@ def get_realtime_board_data(force_refresh: bool = False) -> dict:
         with _FETCH_LOCK:
             fresh = fetch_espn_scoreboard_window(days_back=1, days_ahead=7, timeout=2.5)
             if fresh.get("live_fixtures"):
+                fresh["live_fixtures"] = _merge_with_synced_13_leagues(fresh["live_fixtures"], force_refresh=True)
                 with _BOARD_LOCK:
                     _BOARD_CACHE.clear()
                     _BOARD_CACHE.update(fresh)
@@ -384,7 +414,7 @@ def get_realtime_board_data(force_refresh: bool = False) -> dict:
                 "updated_utc": disk["updated_utc"],
                 "updated_vn": disk["updated_vn"],
                 "fetched_mono": now_m - disk["disk_age"],
-                "live_fixtures": disk["live_fixtures"],
+                "live_fixtures": _merge_with_synced_13_leagues(disk["live_fixtures"], force_refresh=False),
             }
             with _BOARD_LOCK:
                 _BOARD_CACHE.clear()
@@ -393,6 +423,7 @@ def get_realtime_board_data(force_refresh: bool = False) -> dict:
 
         fresh = fetch_espn_scoreboard_window(days_back=1, days_ahead=7, timeout=2.5)
         if fresh.get("live_fixtures"):
+            fresh["live_fixtures"] = _merge_with_synced_13_leagues(fresh["live_fixtures"], force_refresh=False)
             with _BOARD_LOCK:
                 _BOARD_CACHE.clear()
                 _BOARD_CACHE.update(fresh)

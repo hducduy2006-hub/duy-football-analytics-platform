@@ -11,9 +11,11 @@ import html
 import json
 import math
 import os
+import time as _time
 import unicodedata as _ud
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -82,7 +84,8 @@ def _safe_float(val, default: float = 0.0) -> float:
 
 
 def _norm_key(name: str) -> str:
-    s = _ud.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode("ascii").lower()
+    raw = str(name or "").translate(str.maketrans({"ø": "o", "Ø": "o", "ł": "l", "Ł": "l", "đ": "d", "Đ": "d"}))
+    s = _ud.normalize("NFKD", raw).encode("ascii", "ignore").decode("ascii").lower()
     for tok in ("fc ", " fc", "afc ", " cf", " sc", " ac ", "sv ", "1. ", "sc ", "as ", "ss ", "us ", "rc ", "rcd ", "cd ", "ud ", "ogc "):
         s = s.replace(tok, " ")
     s = "".join(ch if ch.isalnum() else " " for ch in s)
@@ -311,68 +314,444 @@ def fetch_espn_event_live_intel(espn_slug: str, espn_event_id: str) -> dict:
     return out
 
 
-def match_espn_live_entry(home_team: str, away_team: str, match_date: str, espn_cache: dict) -> dict:
-    """Tra cứu O(1) từ bộ chỉ mục cặp đội ESPN."""
+ALL_ESPN_LEAGUE_SLUGS = {
+    code: meta[2]
+    for code, meta in LEAGUE_META.items()
+    if code in LEAGUE_ORDER and len(meta) >= 3 and meta[2]
+}
+
+_VN_TZ = timezone(timedelta(hours=7))
+
+
+def _fetch_espn_scoreboard_day(code: str, slug: str, dt_yyyymmdd: str, timeout: float = 3.0) -> list[dict]:
+    """Fetch a single competition scoreboard day from ESPN (single-date query only)."""
+    try:
+        from build_pro_analytics_store import clean_club_name
+    except Exception:
+        clean_club_name = lambda s: str(s or "").strip()
+
+    comp_label = CATALOG_CATEGORY_MAP.get(code, LEAGUE_META.get(code, (code, code, slug))[0])
+    url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{slug}/scoreboard?dates={dt_yyyymmdd}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (NCKH-TUD65/1.0)"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            sb = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+
+    out = []
+    for ev in (sb.get("events") or []):
+        try:
+            eid = str(ev.get("id") or "").strip()
+            if not eid:
+                continue
+            st_obj = ev.get("status") or {}
+            st_type = st_obj.get("type") or {}
+            st_name = str(st_type.get("name") or "")
+            state = str(st_type.get("state") or "pre").lower()
+            if state not in ("in", "pre", "post"):
+                state = "post" if ("FINAL" in st_name or "FULL_TIME" in st_name) else "pre"
+
+            comp0 = (ev.get("competitions") or [{}])[0] or {}
+            comps = comp0.get("competitors") or []
+            home_c = next((c for c in comps if isinstance(c, dict) and c.get("homeAway") == "home"), None)
+            away_c = next((c for c in comps if isinstance(c, dict) and c.get("homeAway") == "away"), None)
+            if not home_c or not away_c:
+                continue
+
+            h_team_obj = home_c.get("team") or {}
+            a_team_obj = away_c.get("team") or {}
+            h_name = clean_club_name(h_team_obj.get("displayName", ""))
+            a_name = clean_club_name(a_team_obj.get("displayName", ""))
+            if not h_name or not a_name:
+                continue
+
+            h_logos = h_team_obj.get("logos") or []
+            a_logos = a_team_obj.get("logos") or []
+            h_logo = str(h_team_obj.get("logo") or (h_logos[0].get("href") if h_logos and isinstance(h_logos[0], dict) else "") or "")
+            a_logo = str(a_team_obj.get("logo") or (a_logos[0].get("href") if a_logos and isinstance(a_logos[0], dict) else "") or "")
+
+            h_score, a_score = None, None
+            if state in ("in", "post"):
+                try:
+                    h_score = int(float(home_c.get("score")))
+                    a_score = int(float(away_c.get("score")))
+                except (TypeError, ValueError):
+                    h_score, a_score = None, None
+
+            kickoff_utc = str(ev.get("date") or "")
+            vn_date = f"{dt_yyyymmdd[:4]}-{dt_yyyymmdd[4:6]}-{dt_yyyymmdd[6:8]}"
+            vn_time = ""
+            kickoff_ts = 0.0
+            if kickoff_utc:
+                try:
+                    dt_utc = datetime.fromisoformat(kickoff_utc.replace("Z", "+00:00"))
+                    dt_vn = dt_utc.astimezone(_VN_TZ)
+                    vn_date = dt_vn.strftime("%Y-%m-%d")
+                    vn_time = dt_vn.strftime("%H:%M")
+                    kickoff_ts = dt_utc.timestamp()
+                except Exception:
+                    vn_date = kickoff_utc[:10] or vn_date
+
+            raw_detail = str(st_type.get("shortDetail") or "").strip()
+            if state == "in":
+                status_detail = raw_detail or str(st_obj.get("displayClock") or "LIVE")
+            elif state == "post":
+                status_detail = raw_detail or "FT"
+            else:
+                status_detail = "Hoãn" if "POSTPONED" in st_name.upper() else (vn_time or "Theo lịch")
+
+            venue_obj = comp0.get("venue") or {}
+            venue = str(venue_obj.get("fullName") or "")
+            city = str((venue_obj.get("address") or {}).get("city") or "")
+            odds_arr = comp0.get("odds") or []
+            od0 = next((o for o in odds_arr if isinstance(o, dict)), None)
+            odds_info = {}
+            if od0:
+                h_ml = (od0.get("homeTeamOdds") or {}).get("moneyLine")
+                a_ml = (od0.get("awayTeamOdds") or {}).get("moneyLine")
+                d_ml = (od0.get("drawOdds") or {}).get("moneyLine")
+                ph, pd_, pa = _american_to_prob(h_ml), _american_to_prob(d_ml), _american_to_prob(a_ml)
+                if ph and pd_ and pa:
+                    tot_p = ph + pd_ + pa
+                    odds_info = {
+                        "provider": (od0.get("provider") or {}).get("name", "DraftKings"),
+                        "details": od0.get("details", ""),
+                        "over_under": od0.get("overUnder"),
+                        "spread": od0.get("spread"),
+                        "home_ml": h_ml,
+                        "draw_ml": d_ml,
+                        "away_ml": a_ml,
+                        "mkt_prob_H": round(ph / tot_p * 100, 1),
+                        "mkt_prob_D": round(pd_ / tot_p * 100, 1),
+                        "mkt_prob_A": round(pa / tot_p * 100, 1),
+                    }
+
+            out.append({
+                "espn_event_id": eid,
+                "league_code": code,
+                "espn_slug": slug,
+                "competition": comp_label,
+                "kickoff_utc": kickoff_utc,
+                "kickoff_ts": kickoff_ts,
+                "match_date": vn_date,
+                "vn_date": vn_date,
+                "vn_time": vn_time,
+                "state": state,
+                "status": st_name,
+                "status_detail": status_detail,
+                "home_team": h_name,
+                "away_team": a_name,
+                "home_logo": h_logo,
+                "away_logo": a_logo,
+                "home_score": h_score,
+                "away_score": a_score,
+                "home_form": home_c.get("form", ""),
+                "away_form": away_c.get("form", ""),
+                "venue": f"{venue} ({city})" if venue and city else venue,
+                "odds": odds_info,
+            })
+        except Exception:
+            continue
+    return out
+
+
+@st.cache_resource(show_spinner=False, ttl=3600)
+def _fetch_backfill_past_espn_results(today_vn_str: str) -> list[dict]:
+    """Backfill finished ESPN results for upcoming_fixtures dates <= today across all 13 leagues."""
+    up_df = load_upcoming_fixtures_df()
+    if up_df.empty:
+        return []
+    try:
+        today_d = date.fromisoformat(today_vn_str)
+    except Exception:
+        today_d = datetime.now(_VN_TZ).date()
+    min_d_str = (today_d - timedelta(days=45)).strftime("%Y-%m-%d")
+    sub = up_df[(up_df["match_date"] >= min_d_str) & (up_df["match_date"] <= today_vn_str)]
+    if sub.empty:
+        return []
+
+    tasks = set()
+    for lg, mdate in zip(sub["league"].astype(str), sub["match_date"].astype(str)):
+        slug = ALL_ESPN_LEAGUE_SLUGS.get(lg)
+        if not slug:
+            continue
+        try:
+            dt_o = date.fromisoformat(mdate[:10])
+        except Exception:
+            continue
+        for delta in (-1, 0):
+            d_s = (dt_o + timedelta(days=delta)).strftime("%Y%m%d")
+            tasks.add((lg, slug, d_s))
+
+    if not tasks:
+        return []
+    out = []
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        futs = [pool.submit(_fetch_espn_scoreboard_day, c, s, d, 3.0) for c, s, d in sorted(tasks)]
+        for fut in as_completed(futs):
+            try:
+                out.extend(fut.result())
+            except Exception:
+                continue
+    return out
+
+
+@st.cache_resource(show_spinner=False, ttl=180)
+def _fetch_recent_live_espn_results(bucket_3m: int) -> list[dict]:
+    """Fetch yesterday/today/tomorrow UTC across all 13 leagues every 3 minutes."""
+    now_utc = datetime.now(timezone.utc)
+    dt_strs = [(now_utc + timedelta(days=d)).strftime("%Y%m%d") for d in (-1, 0, 1)]
+    tasks = [
+        (code, slug, dt_s)
+        for code, slug in ALL_ESPN_LEAGUE_SLUGS.items()
+        for dt_s in dt_strs
+    ]
+    out = []
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        futs = [pool.submit(_fetch_espn_scoreboard_day, c, s, d, 2.5) for c, s, d in tasks]
+        for fut in as_completed(futs):
+            try:
+                out.extend(fut.result())
+            except Exception:
+                continue
+    return out
+
+
+def get_synced_espn_results(force_refresh: bool = False) -> dict:
+    """Merge disk ESPN cache, past-schedule backfill, and recent 13-league live results."""
+    if force_refresh:
+        for fn in (_fetch_recent_live_espn_results, _fetch_backfill_past_espn_results, load_espn_live_cache):
+            try:
+                fn.clear()
+            except Exception:
+                pass
+
+    disk = load_espn_live_cache()
+    today_vn_str = datetime.now(_VN_TZ).strftime("%Y-%m-%d")
+    bucket_3m = int(_time.time() // 180)
+
+    merged_by_id: dict[str, dict] = {}
+    prio_rank = {"pre": 1, "in": 2, "post": 3}
+
+    for source_list, recency in (
+        (disk.get("live_fixtures") or [], 0),
+        (_fetch_backfill_past_espn_results(today_vn_str), 1),
+        (_fetch_recent_live_espn_results(bucket_3m), 2),
+    ):
+        for item in source_list:
+            if not isinstance(item, dict):
+                continue
+            eid = str(item.get("espn_event_id") or "").strip()
+            if not eid:
+                continue
+            prev = merged_by_id.get(eid)
+            if prev is None:
+                c = dict(item)
+                c["_prio"] = (prio_rank.get(str(item.get("state") or "pre").lower(), 0), recency)
+                merged_by_id[eid] = c
+            else:
+                new_prio = (prio_rank.get(str(item.get("state") or "pre").lower(), 0), recency)
+                if new_prio >= prev.get("_prio", (0, -1)):
+                    c = dict(item)
+                    c["_prio"] = new_prio
+                    if not c.get("odds") and prev.get("odds"):
+                        c["odds"] = prev["odds"]
+                    merged_by_id[eid] = c
+
+    pair_idx: dict[tuple[str, str], list[dict]] = {}
+    final_list = []
+    for rec in merged_by_id.values():
+        rec.pop("_prio", None)
+        final_list.append(rec)
+        hk = _team_alias_key(rec.get("home_team", ""))
+        ak = _team_alias_key(rec.get("away_team", ""))
+        pair_idx.setdefault((hk, ak), []).append(rec)
+
+    return {
+        "updated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if final_list else disk.get("updated_utc", ""),
+        "standings": disk.get("standings") or {},
+        "live_fixtures": final_list,
+        "_pair_idx": pair_idx,
+    }
+
+
+def _espn_candidate_date(cand: dict) -> str:
+    return str(cand.get("vn_date") or cand.get("match_date") or cand.get("kickoff_utc") or "")[:10]
+
+
+def match_espn_live_entry(
+    home_team: str,
+    away_team: str,
+    match_date: str,
+    espn_cache: dict,
+    max_day_diff: int = 2,
+) -> dict:
+    """Tra cứu O(1) từ bộ chỉ mục cặp đội ESPN với chốt an toàn chênh lệch ngày."""
     pair_idx = espn_cache.get("_pair_idx") or {}
     hk = _team_alias_key(home_team)
     ak = _team_alias_key(away_team)
     cands = pair_idx.get((hk, ak)) or []
+    if not cands:
+        return {}
     mdate = str(match_date or "")[:10]
-    if cands:
-        if len(cands) == 1 or not mdate:
-            return cands[0]
+    if not mdate:
+        return cands[0]
+    try:
+        dt_ref = date.fromisoformat(mdate)
+    except Exception:
+        return cands[0]
+
+    best_cand = {}
+    best_diff = 9999
+    for c in cands:
+        cd = _espn_candidate_date(c)
+        if not cd:
+            continue
         try:
-            dt_ref = datetime.strptime(mdate, "%Y-%m-%d")
-            best = min(cands, key=lambda x: abs((datetime.strptime(str(x.get("match_date", mdate))[:10], "%Y-%m-%d") - dt_ref).days))
-            return best
+            diff = abs((date.fromisoformat(cd) - dt_ref).days)
         except Exception:
-            return cands[0]
+            continue
+        if diff < best_diff:
+            best_diff = diff
+            best_cand = c
+    if best_diff <= max_day_diff:
+        return best_cand
     return {}
 
 
 def get_upcoming_catalog_entries(days_ahead: int = 240) -> list[dict]:
     up_df = load_upcoming_fixtures_df()
-    if up_df.empty:
-        return []
-    espn_cache = load_espn_live_cache()
-    now_vn = datetime.now(timezone(timedelta(hours=7)))
-    cutoff_min = (now_vn - timedelta(days=1)).strftime("%Y-%m-%d")
+    synced_espn = get_synced_espn_results()
+    now_vn = datetime.now(_VN_TZ)
+    today_vn_str = now_vn.strftime("%Y-%m-%d")
+    cutoff_min = (now_vn - timedelta(days=45)).strftime("%Y-%m-%d")
     cutoff_max = (now_vn + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
-    sub = up_df[(up_df["match_date"] >= cutoff_min) & (up_df["match_date"] <= cutoff_max)]
     entries = []
-    for _, r in sub.iterrows():
-        lg = str(r.get("league") or "")
-        cat_name = CATALOG_CATEGORY_MAP.get(lg, LEAGUE_META.get(lg, (f"⚽ {lg}", lg, ""))[0])
+    matched_eids: set[str] = set()
+    matched_sigs: list[tuple[str, str, date]] = []
+
+    if not up_df.empty:
+        sub = up_df[(up_df["match_date"] >= cutoff_min) & (up_df["match_date"] <= cutoff_max)]
+        for _, r in sub.iterrows():
+            lg = str(r.get("league") or "")
+            cat_name = CATALOG_CATEGORY_MAP.get(lg, LEAGUE_META.get(lg, (f"⚽ {lg}", lg, ""))[0])
+            lg_short = LEAGUE_META.get(lg, (lg, lg, ""))[1]
+            ht = str(r.get("home_team") or "Home")
+            at = str(r.get("away_team") or "Away")
+            md = str(r.get("match_date") or "")[:10]
+            espn_m = match_espn_live_entry(ht, at, md, synced_espn, max_day_diff=2)
+            season_disp = str(r.get("season") or "2026-2027").replace("-", "/")
+
+            eff_date = str(espn_m.get("vn_date") or espn_m.get("match_date") or md)[:10]
+            state = str(espn_m.get("state") or "").lower()
+            hs = espn_m.get("home_score")
+            as_ = espn_m.get("away_score")
+
+            if espn_m.get("espn_event_id"):
+                matched_eids.add(str(espn_m["espn_event_id"]))
+            try:
+                matched_sigs.append((_team_alias_key(ht), _team_alias_key(at), date.fromisoformat(eff_date)))
+            except Exception:
+                pass
+
+            if state in ("post", "in") and hs is not None and as_ is not None:
+                is_live = state == "in"
+                st_badge = f"🔴 LIVE ({espn_m.get('status_detail') or 'LIVE'})" if is_live else "✅ FT"
+                entries.append({
+                    "category": cat_name,
+                    "id": f"espn_res_{espn_m.get('espn_event_id') or r['match_id']}",
+                    "upcoming_match_id": str(r["match_id"]),
+                    "espn_event_id": str(espn_m.get("espn_event_id") or ""),
+                    "league_code": lg,
+                    "label": f"{ht} {int(hs)} - {int(as_)} {at}",
+                    "home_team": str(espn_m.get("home_team") or ht),
+                    "away_team": str(espn_m.get("away_team") or at),
+                    "home_score": int(hs),
+                    "away_score": int(as_),
+                    "is_upcoming": False,
+                    "stage": f"{lg_short} {season_disp} - {st_badge}",
+                    "date": eff_date,
+                    "kickoff_utc": espn_m.get("kickoff_utc", ""),
+                    "stadium": espn_m.get("venue") or f"{lg_short} Stadium",
+                    "referee": "Trọng tài FIFA / Liên đoàn",
+                    "source_type": "espn_live_result",
+                    "espn_fixture": espn_m,
+                })
+                continue
+
+            if eff_date < today_vn_str and state != "pre":
+                continue
+
+            entries.append({
+                "category": cat_name,
+                "id": f"upcoming_{r['match_id']}",
+                "upcoming_match_id": str(r["match_id"]),
+                "league_code": lg,
+                "label": f"⏰ {ht} vs {at}",
+                "home_team": ht,
+                "away_team": at,
+                "home_score": None,
+                "away_score": None,
+                "is_upcoming": True,
+                "stage": f"{lg_short} {season_disp} - 🗓️ Sắp diễn ra",
+                "date": eff_date,
+                "kickoff_utc": espn_m.get("kickoff_utc", ""),
+                "stadium": espn_m.get("venue") or f"{lg_short} Stadium",
+                "referee": "Chưa công bố tổ trọng tài",
+                "prob_H": round(_safe_float(r.get("prob_H"), 0.34) * 100.0, 1),
+                "prob_D": round(_safe_float(r.get("prob_D"), 0.28) * 100.0, 1),
+                "prob_A": round(_safe_float(r.get("prob_A"), 0.38) * 100.0, 1),
+                "pred_home_goals": round(_safe_float(r.get("pred_home_goals"), 1.35), 2),
+                "pred_away_goals": round(_safe_float(r.get("pred_away_goals"), 1.15), 2),
+                "source_type": "upcoming_fixture",
+            })
+
+    # Also include recent 14-day finished/live ESPN fixtures absent from upcoming_fixtures.parquet
+    cutoff_recent = (now_vn - timedelta(days=14)).strftime("%Y-%m-%d")
+    for em in (synced_espn.get("live_fixtures") or []):
+        eid = str(em.get("espn_event_id") or "")
+        if not eid or eid in matched_eids:
+            continue
+        state = str(em.get("state") or "").lower()
+        hs, as_ = em.get("home_score"), em.get("away_score")
+        ed = str(em.get("vn_date") or em.get("match_date") or "")[:10]
+        if state not in ("post", "in") or hs is None or as_ is None or not ed or ed < cutoff_recent:
+            continue
+        ht_e = str(em.get("home_team") or "")
+        at_e = str(em.get("away_team") or "")
+        hk_e, ak_e = _team_alias_key(ht_e), _team_alias_key(at_e)
+        try:
+            ed_dt = date.fromisoformat(ed)
+            if any(h0 == hk_e and a0 == ak_e and abs((ed_dt - d0).days) <= 2 for h0, a0, d0 in matched_sigs):
+                continue
+        except Exception:
+            pass
+        lg = str(em.get("league_code") or "")
+        cat_name = CATALOG_CATEGORY_MAP.get(lg, em.get("competition") or f"⚽ {lg}")
         lg_short = LEAGUE_META.get(lg, (lg, lg, ""))[1]
-        ht = str(r.get("home_team") or "Home")
-        at = str(r.get("away_team") or "Away")
-        md = str(r.get("match_date") or "")[:10]
-        espn_m = match_espn_live_entry(ht, at, md, espn_cache)
-        season_disp = str(r.get("season") or "2026-2027").replace("-", "/")
+        st_badge = f"🔴 LIVE ({em.get('status_detail') or 'LIVE'})" if state == "in" else "✅ FT"
         entries.append({
             "category": cat_name,
-            "id": f"upcoming_{r['match_id']}",
-            "upcoming_match_id": str(r["match_id"]),
+            "id": f"espn_res_{eid}",
+            "espn_event_id": eid,
             "league_code": lg,
-            "label": f"⏰ {ht} vs {at}",
-            "home_team": ht,
-            "away_team": at,
-            "home_score": None,
-            "away_score": None,
-            "is_upcoming": True,
-            "stage": f"{lg_short} {season_disp} - 🗓️ Sắp diễn ra",
-            "date": md,
-            "kickoff_utc": espn_m.get("kickoff_utc", ""),
-            "stadium": espn_m.get("venue") or f"{lg_short} Stadium",
-            "referee": "Chưa công bố tổ trọng tài",
-            "prob_H": round(_safe_float(r.get("prob_H"), 0.34) * 100.0, 1),
-            "prob_D": round(_safe_float(r.get("prob_D"), 0.28) * 100.0, 1),
-            "prob_A": round(_safe_float(r.get("prob_A"), 0.38) * 100.0, 1),
-            "pred_home_goals": round(_safe_float(r.get("pred_home_goals"), 1.35), 2),
-            "pred_away_goals": round(_safe_float(r.get("pred_away_goals"), 1.15), 2),
-            "source_type": "upcoming_fixture",
+            "label": f"{ht_e} {int(hs)} - {int(as_)} {at_e}",
+            "home_team": ht_e,
+            "away_team": at_e,
+            "home_score": int(hs),
+            "away_score": int(as_),
+            "is_upcoming": False,
+            "stage": f"{lg_short} 2026/27 - {st_badge}",
+            "date": ed,
+            "kickoff_utc": em.get("kickoff_utc", ""),
+            "stadium": em.get("venue") or f"{lg_short} Stadium",
+            "referee": "Trọng tài FIFA / Liên đoàn",
+            "source_type": "espn_live_result",
+            "espn_fixture": em,
         })
+
     return entries
 
 
@@ -1277,15 +1656,16 @@ def render_prematch_research_workspace(
     """Trung Tâm AI & Dự Đoán Trận Đấu Thống Nhất — 4 Tab Phẳng Lazy-Load."""
     up_df = load_upcoming_fixtures_df()
     hist_df = load_historical_xg_df()
-    espn_cache = load_espn_live_cache()
+    espn_cache = get_synced_espn_results()
 
     hl, hr = st.columns([4.0, 1.2])
     with hl:
         st.markdown("### 🔮 Trung Tâm AI Phân Tích & Dự Đoán Trận Đấu")
-        st.caption(f"📚 **{len(up_df):,} trận chưa diễn ra (13 giải)** · **{len(hist_df):,} trận lịch sử xG/Elo** · Live ESPN: `{espn_cache.get('updated_utc') or 'Cache'}`")
+        st.caption(f"📚 **{len(up_df):,} trận trong lịch (13 giải)** · **{len(hist_df):,} trận lịch sử xG/Elo** · Live ESPN: `{espn_cache.get('updated_utc') or 'Cache'}`")
     with hr:
         if st.button("🔄 Đồng bộ Live", width="stretch", key="btn_sync_espn_live"):
-            with st.spinner("Đang cập nhật kèo & lịch Live từ ESPN..."):
+            with st.spinner("Đang cập nhật kèo, tỷ số & lịch Live từ ESPN..."):
+                get_synced_espn_results(force_refresh=True)
                 ok, msg = refresh_espn_live_now()
             st.success(msg) if ok else st.warning(msg)
             if ok:
@@ -1294,6 +1674,25 @@ def render_prematch_research_workspace(
     if up_df.empty:
         st.warning("Chưa tìm thấy dữ liệu trận chưa diễn ra. Hãy chạy `python build_pro_analytics_store.py`.")
         return
+
+    today_dt = datetime.now(_VN_TZ).date()
+    today_vn_str = today_dt.strftime("%Y-%m-%d")
+
+    def _is_row_truly_upcoming(rr_row) -> bool:
+        es_m = match_espn_live_entry(
+            str(rr_row.get("home_team") or ""),
+            str(rr_row.get("away_team") or ""),
+            str(rr_row.get("match_date") or ""),
+            espn_cache,
+            max_day_diff=2,
+        )
+        st_val = str(es_m.get("state") or "").lower()
+        if st_val == "post":
+            return False
+        eff_d = str(es_m.get("vn_date") or rr_row.get("match_date") or "")[:10]
+        if eff_d and eff_d < today_vn_str and st_val != "pre":
+            return False
+        return True
 
     if st.session_state.get("jump_upcoming_match_id") or preselected_match_id:
         st.session_state["prematch_tabs_sel"] = "🎯 Trận Sắp Đá"
@@ -1313,15 +1712,39 @@ def render_prematch_research_workspace(
     if tab_up.open:
         with tab_up:
             jump_uid = st.session_state.pop("jump_upcoming_match_id", None) or preselected_match_id
-            avail_leagues = [lg for lg in LEAGUE_ORDER if lg in set(up_df["league"].unique())]
-            for lg in sorted(up_df["league"].unique()):
-                if lg not in avail_leagues:
-                    avail_leagues.append(lg)
+            up_active_mask = up_df.apply(_is_row_truly_upcoming, axis=1)
+            up_active_df = up_df[up_active_mask].reset_index(drop=True)
+            if up_active_df.empty:
+                up_active_df = up_df
 
             if jump_uid and str(jump_uid) in set(up_df["match_id"].astype(str)):
                 j_row = up_df[up_df["match_id"].astype(str) == str(jump_uid)].iloc[0]
-                st.session_state["pm_league_pick"] = str(j_row["league"])
-                st.session_state["pm_days_window"] = "Toàn mùa"
+                j_espn = match_espn_live_entry(
+                    str(j_row["home_team"]),
+                    str(j_row["away_team"]),
+                    str(j_row["match_date"]),
+                    espn_cache,
+                    max_day_diff=2,
+                )
+                if str(j_espn.get("state") or "").lower() == "post" and j_espn.get("home_score") is not None:
+                    hs_j, as_j = int(j_espn["home_score"]), int(j_espn["away_score"])
+                    c_ban, c_go = st.columns([3.5, 1.5])
+                    c_ban.success(
+                        f"✅ Trận đấu đã kết thúc: **{j_row['home_team']} {hs_j} - {as_j} {j_row['away_team']}** "
+                        f"({j_espn.get('status_detail') or 'FT'})"
+                    )
+                    if c_go.button("🏟️ Xem Phân Tích Sau Trận (6 Tab)", key=f"pm_jump_post_{jump_uid}", width="stretch"):
+                        st.session_state["daily_match_center_fixture"] = j_espn
+                        st.session_state["pending_workspace"] = "ws_match"
+                        st.rerun()
+                else:
+                    st.session_state["pm_league_pick"] = str(j_row["league"])
+                    st.session_state["pm_days_window"] = "Toàn mùa"
+
+            avail_leagues = [lg for lg in LEAGUE_ORDER if lg in set(up_active_df["league"].unique())]
+            for lg in sorted(up_active_df["league"].unique()):
+                if lg not in avail_leagues:
+                    avail_leagues.append(lg)
 
             c1, c2 = st.columns([1.6, 1.0], gap="small")
             lg_opts = ["ALL"] + avail_leagues
@@ -1334,8 +1757,7 @@ def render_prematch_research_workspace(
                 st.session_state["pm_days_window"] = "14 ngày tới"
             sel_win = c2.selectbox("Thời gian:", win_opts, key="pm_days_window")
 
-            sub = up_df if sel_lg == "ALL" else up_df[up_df["league"] == sel_lg]
-            today_dt = datetime.now(timezone(timedelta(hours=7))).date()
+            sub = up_active_df if sel_lg == "ALL" else up_active_df[up_active_df["league"] == sel_lg]
             min_d = (today_dt - timedelta(days=1)).strftime("%Y-%m-%d")
             days_map = {"7 ngày tới": 7, "14 ngày tới": 14, "30 ngày tới": 30}
             if sel_win in days_map:
@@ -1343,7 +1765,7 @@ def render_prematch_research_workspace(
                 sub = sub[(sub["match_date"] >= min_d) & (sub["match_date"] <= max_d)]
 
             if sub.empty:
-                st.info("Không có trận nào trong khoảng thời gian này — hãy chọn **30 ngày tới** hoặc **Toàn mùa**.")
+                st.info("Không có trận chưa đá nào trong khoảng thời gian này — hãy chọn **30 ngày tới** hoặc **Toàn mùa**.")
             else:
                 sub = sub.reset_index(drop=True)
                 mids = sub["match_id"].astype(str).tolist()
@@ -1389,15 +1811,16 @@ def render_prematch_research_workspace(
                 key="scan_lg",
             )
 
-            today_dt = datetime.now(timezone(timedelta(hours=7))).date()
             sc_df = up_df[(up_df["match_date"] >= (today_dt - timedelta(days=1)).strftime("%Y-%m-%d")) & (up_df["match_date"] <= (today_dt + timedelta(days=scan_days)).strftime("%Y-%m-%d"))]
+            if not sc_df.empty:
+                sc_df = sc_df[sc_df.apply(_is_row_truly_upcoming, axis=1)]
             if scan_lg == "TOP7":
                 sc_df = sc_df[sc_df["league"].isin(["ENG", "ESP", "ITA", "GER", "FRA", "UCL", "UEL"])]
             elif scan_lg != "ALL":
                 sc_df = sc_df[sc_df["league"] == scan_lg]
 
             if sc_df.empty:
-                st.info("Không có trận nào trong khoảng quét này.")
+                st.info("Không có trận chưa đá nào trong khoảng quét này.")
             else:
                 rows = []
                 for _, rr in sc_df.iterrows():
@@ -1407,7 +1830,7 @@ def render_prematch_research_workspace(
                     pA = round(_safe_float(rr.get("prob_A"), 0.37) * 100.0, 1)
                     dc_q = dixon_coles_matrix(lh, la, max_goals=6)
                     comb_elo = (_safe_float(rr.get("home_elo"), 1650) + _safe_float(rr.get("away_elo"), 1650)) / 2.0
-                    espn_m = match_espn_live_entry(str(rr["home_team"]), str(rr["away_team"]), str(rr["match_date"]), espn_cache)
+                    espn_m = match_espn_live_entry(str(rr["home_team"]), str(rr["away_team"]), str(rr["match_date"]), espn_cache, max_day_diff=2)
                     od = espn_m.get("odds") or {}
                     max_edge, edge_lbl = 0.0, "—"
                     if od.get("mkt_prob_H"):
