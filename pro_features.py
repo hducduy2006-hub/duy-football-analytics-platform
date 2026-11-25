@@ -2933,7 +2933,8 @@ def render_sidebar_pro_controls(catalog: dict):
         # Mỗi người truy cập công khai có phiên riêng độc lập (không ghi đè Yêu thích / Dự đoán của nhau)
         st.session_state["auth_user"] = None
     ws_options = ["ws_today", "ws_match", "ws_prematch", "ws_hub", "ws_live"]
-    if "platform_workspace" not in st.session_state or st.session_state["platform_workspace"] not in ws_options:
+    valid_ws = ws_options + ["ws_explore"]
+    if "platform_workspace" not in st.session_state or st.session_state["platform_workspace"] not in valid_ws:
         st.session_state["platform_workspace"] = "ws_today"
 
     lang_choice = st.session_state["ui_lang"]
@@ -2967,31 +2968,68 @@ def render_sidebar_pro_controls(catalog: dict):
 
 
 def render_sidebar_footer_tools(catalog: dict, lang_choice: str = "vi"):
-    """Gom Tìm kiếm, Tài khoản & Ngôn ngữ vào 1 ngăn gọn ở đáy Sidebar."""
-    user = st.session_state.get("auth_user")
-    u_tag = f"@{user['username']}" if user else "Khách"
-    with st.sidebar.expander(f"Tìm kiếm & Tài khoản ({u_tag})", expanded=False):
-        q = st.text_input("Tìm nhanh đội / trận", placeholder=tr("search_placeholder", lang_choice), key="global_search_input")
-        if q and len(q.strip()) >= 2:
-            ql = q.strip().lower()
-            found_m = []
-            for cn, mlist in catalog.items():
-                for m in mlist:
-                    hay = f"{m.get('label', '')} {m.get('home_team', '')} {m.get('away_team', '')}".lower()
-                    if ql in hay:
-                        found_m.append((cn, m))
-            st.caption(f"Tìm thấy **{len(found_m)}** trận:")
-            for idx_s, (cn, fm) in enumerate(found_m[:6]):
-                btn_ic = "🔮" if fm.get("is_upcoming") else "⚽"
-                if st.button(f"{btn_ic} {fm['label']}", key=f"gs_jump_{fm['id']}_{idx_s}", width="stretch"):
-                    if fm.get("is_upcoming"):
-                        st.session_state["jump_upcoming_match_id"] = str(fm.get("upcoming_match_id") or "")
-                        st.session_state["pending_workspace"] = "ws_prematch"
-                    else:
-                        st.session_state["jump_comp"] = cn
-                        st.session_state["jump_match_label"] = fm["label"]
-                        st.session_state["pending_workspace"] = "ws_match"
-                    st.rerun()
+    """Gom Tìm kiếm Đội bóng & Cầu thủ + Ngôn ngữ vào 1 ngăn gọn ở đáy Sidebar."""
+    from entity_explorer import (
+        open_player_profile,
+        open_team_profile,
+        search_players,
+        search_teams,
+    )
+
+    is_expanded = st.session_state.get("platform_workspace") != "ws_match"
+    with st.sidebar.expander("🔍 Tìm Đội Bóng & Cầu Thủ", expanded=is_expanded):
+        mode = st.radio(
+            "Loại tìm kiếm",
+            ["team", "player"],
+            format_func=lambda x: "🏟️ Đội bóng" if x == "team" else "👤 Cầu thủ",
+            horizontal=True,
+            key="sb_search_mode",
+            label_visibility="collapsed",
+        )
+        ph = (
+            "Nhập tên đội (VD: Real Madrid, Barca, MU...)"
+            if mode == "team"
+            else "Nhập tên cầu thủ (VD: Mbappe, Yamal, Salah...)"
+        )
+        q = st.text_input(
+            "Tìm kiếm",
+            placeholder=ph,
+            key="sb_entity_search_q",
+            label_visibility="collapsed",
+        )
+        q_clean = str(q or "").strip()
+        if len(q_clean) >= 2:
+            if mode == "team":
+                t_hits = search_teams(catalog, q_clean, limit=6)
+                if t_hits:
+                    st.caption(f"Tìm thấy **{len(t_hits)}** đội bóng:")
+                    for idx_t, th in enumerate(t_hits):
+                        if st.button(
+                            f"⚽ {th['name']} ({th['total']} trận)",
+                            key=f"sb_team_jump_{idx_t}_{th['key']}",
+                            width="stretch",
+                        ):
+                            open_team_profile(th["name"])
+                else:
+                    st.caption("Không tìm thấy đội bóng phù hợp.")
+            else:
+                p_hits = search_players(q_clean, limit=6)
+                if p_hits:
+                    st.caption(f"Tìm thấy **{len(p_hits)}** cầu thủ:")
+                    for idx_p, ph_rec in enumerate(p_hits):
+                        club_disp = ph_rec.get("club") or ph_rec.get("nationality") or "—"
+                        if st.button(
+                            f"👤 {ph_rec['name']} · {club_disp} ({ph_rec['ovr']}★)",
+                            key=f"sb_player_jump_{idx_p}_{ph_rec['id']}",
+                            width="stretch",
+                        ):
+                            open_player_profile(ph_rec)
+                else:
+                    st.caption("Không tìm thấy cầu thủ phù hợp.")
+
+        if st.button("🔎 Mở trang Tìm kiếm đầy đủ", key="btn_open_full_explorer", width="stretch"):
+            st.session_state["pending_workspace"] = "ws_explore"
+            st.rerun()
 
         st.markdown("<hr style='margin:8px 0;border-color:rgba(148,163,184,0.12);'>", unsafe_allow_html=True)
         st.radio(
@@ -3001,42 +3039,3 @@ def render_sidebar_footer_tools(catalog: dict, lang_choice: str = "vi"):
             horizontal=True,
             key="ui_lang",
         )
-        st.markdown("<hr style='margin:8px 0;border-color:rgba(148,163,184,0.12);'>", unsafe_allow_html=True)
-        if user:
-            favs = list_favorites(user["username"])
-            if favs:
-                st.caption(f"Đã lưu **{len(favs)}** mục yêu thích:")
-                for fv in favs[:5]:
-                    st.caption(f"• {fv['item_label']}")
-            else:
-                st.caption("Chưa có mục yêu thích nào.")
-            if st.button("Đăng xuất", key="btn_logout", width="stretch"):
-                st.session_state["auth_user"] = None
-                st.rerun()
-        else:
-            guest_favs = list_favorites(_GUEST_SENTINEL)
-            if guest_favs:
-                st.caption(f"Yêu thích phiên này (**{len(guest_favs)}**):")
-                for fv in guest_favs[:5]:
-                    st.caption(f"• {fv['item_label']}")
-            auth_mode = st.radio("Tài khoản (lưu lâu dài)", ["Đăng nhập", "Đăng ký"], horizontal=True, key="auth_mode_rad")
-            u_in = st.text_input("Username", value="demo" if auth_mode == "Đăng nhập" else "", key="auth_u")
-            dn_in = st.text_input("Tên hiển thị", key="auth_dn") if auth_mode == "Đăng ký" else ""
-            pw_in = st.text_input("Mật khẩu", type="password", value="123456" if auth_mode == "Đăng nhập" else "", key="auth_pw")
-            if auth_mode == "Đăng nhập":
-                if st.button("Đăng nhập", key="btn_do_login", width="stretch"):
-                    acc = authenticate_user(u_in, pw_in)
-                    if acc:
-                        st.session_state["auth_user"] = acc
-                        st.rerun()
-                    else:
-                        st.error("Sai tài khoản hoặc mật khẩu (demo / 123456).")
-            else:
-                if st.button("Tạo tài khoản", key="btn_do_reg", width="stretch"):
-                    ok, msg = register_user(u_in, dn_in, pw_in)
-                    if ok:
-                        st.success(msg)
-                        st.session_state["auth_user"] = authenticate_user(u_in, pw_in)
-                        st.rerun()
-                    else:
-                        st.error(msg)

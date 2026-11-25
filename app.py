@@ -42,6 +42,7 @@ from prematch_research import (
 )
 from daily_realtime_hub import render_daily_realtime_home
 from daily_match_center_bridge import build_full_match_center_bundle
+from entity_explorer import render_entity_explorer_workspace
 from team_logos_store import get_team_logo_url
 from player_avatar_store import (
     get_player_avatar_b64,
@@ -3515,6 +3516,11 @@ if active_workspace == "ws_prematch":
 if active_workspace == "ws_hub":
     render_sidebar_footer_tools(catalog, ui_lang)
     render_tournament_hub_workspace(catalog, load_wc2018_full_df_lazy, wc2018_shots_df, _player_display_name)
+    st.stop()
+
+if active_workspace == "ws_explore":
+    render_sidebar_footer_tools(catalog, ui_lang)
+    render_entity_explorer_workspace(catalog, ui_lang=ui_lang)
     st.stop()
 
 st.sidebar.markdown('<div class="sidebar-section-hdr">BỘ LỌC TRẬN ĐẤU</div>', unsafe_allow_html=True)
