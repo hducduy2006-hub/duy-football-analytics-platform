@@ -129,6 +129,15 @@ _TEAM_ALIASES = {
     "mainz": "mainz 05",
     "mainz 05": "mainz 05",
     "racing santander": "racing de santander",
+    "deportivo": "deportivo la coruna",
+    "deportivo la coruna": "deportivo la coruna",
+    "le havre ac": "le havre",
+    "le havre": "le havre",
+    "cologne": "koln",
+    "1 fc koln": "koln",
+    "fc koln": "koln",
+    "paderborn 07": "paderborn",
+    "sc paderborn 07": "paderborn",
 }
 
 

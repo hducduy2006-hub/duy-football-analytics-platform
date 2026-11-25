@@ -1,0 +1,51 @@
+name: Auto-Sync Football Data (24/7)
+
+on:
+  schedule:
+    - cron: "15 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-sync-football-data
+  cancel-in-progress: false
+
+jobs:
+  sync-and-keep-awake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install minimal sync dependencies
+        run: pip install --no-cache-dir pandas pyarrow numpy
+
+      - name: Sync ESPN results, 13-league standings, Elo & fixtures
+        run: python sync_live_cloud_data.py
+
+      - name: Commit & push updated datasets if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sample_data/pro_analytics/espn_live_cache.json sample_data/pro_analytics/historical_matches_xg.parquet sample_data/pro_analytics/upcoming_fixtures.parquet
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(data): auto-sync live ESPN results, standings & Elo"
+            git pull --rebase origin main
+            git push origin main
+          else
+            echo "No dataset changes to commit."
+          fi
+
+      - name: Ping Streamlit Cloud health endpoint
+        if: always()
+        run: curl -fsS --max-time 25 "https://nckh-tud65-football.streamlit.app/_stcore/health" || true
