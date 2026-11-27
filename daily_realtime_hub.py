@@ -328,6 +328,7 @@ def _spawn_background_refresh():
         try:
             fresh = fetch_espn_scoreboard_window(days_back=1, days_ahead=7, timeout=2.5)
             if fresh.get("live_fixtures"):
+                fresh["live_fixtures"] = _merge_with_synced_13_leagues(fresh["live_fixtures"], force_refresh=False)
                 with _BOARD_LOCK:
                     _BOARD_CACHE.clear()
                     _BOARD_CACHE.update(fresh)
@@ -1163,12 +1164,11 @@ def _team_badge_html(name: str, logo_url: str, is_home: bool, size: int = 24) ->
     )
 
 
-def _render_realtime_clock_banner(live_cnt: int, today_pre_cnt: int, today_post_cnt: int, updated_vn: str):
+def _render_realtime_clock_banner(live_cnt: int = 0, today_pre_cnt: int = 0, today_post_cnt: int = 0, updated_vn: str = ""):
     upd_esc = html.escape(str(updated_vn or "Vừa xong"))
     now_vn_srv = datetime.now(VN_TZ)
     init_time = now_vn_srv.strftime("%H:%M:%S")
     init_date = f"{_VI_WEEKDAYS[now_vn_srv.weekday()]}, {now_vn_srv.strftime('%d/%m/%Y')} · GMT+7"
-    live_cls = "nckh-stat-chip live" if live_cnt > 0 else "nckh-stat-chip"
     banner_html = compact_html(f"""
 <style>
 .nckh-clk-bar {{
@@ -1217,9 +1217,6 @@ def _render_realtime_clock_banner(live_cnt: int, today_pre_cnt: int, today_post_
     <span id="nckh-vn-date">{html.escape(init_date)}</span>
   </div>
   <div class="nckh-clk-right">
-    <span class="{live_cls}">🔴 {live_cnt} đang đá</span>
-    <span class="nckh-stat-chip">⏰ {today_pre_cnt} sắp đá hôm nay</span>
-    <span class="nckh-stat-chip">✅ {today_post_cnt} đã đá</span>
     <span class="nckh-upd-tag">Đồng bộ: {upd_esc}</span>
   </div>
 </div>
@@ -1934,18 +1931,88 @@ def _render_daily_schedule_fragment(fixtures: list[dict], updated_vn: str, ui_la
     sel_date = str(st.session_state["daily_sel_date"])
     if "daily_date_picker" not in st.session_state:
         st.session_state["daily_date_picker"] = _parse_iso_date(sel_date) or today_date
+    if "daily_state_flt" not in st.session_state or st.session_state["daily_state_flt"] not in ("all", "in", "pre", "post"):
+        st.session_state["daily_state_flt"] = "all"
+
+    def _set_state_flt(target: str):
+        cur_s = st.session_state.get("daily_state_flt", "all")
+        if target != "all" and cur_s == target:
+            st.session_state["daily_state_flt"] = "all"
+        else:
+            st.session_state["daily_state_flt"] = target
 
     def _on_picker_change():
         picked = st.session_state.get("daily_date_picker")
+        st.session_state["daily_state_flt"] = "all"
         if picked is not None:
             st.session_state["daily_sel_date"] = picked.strftime("%Y-%m-%d")
             wk = max(min_wk, min(max_wk, (picked - current_monday).days // 7))
             st.session_state["daily_week_slider"] = wk
 
-    # Top filter & sync bar
     avail_lgs = [lg for lg in _EXTENDED_LEAGUE_ORDER if any(m.get("league_code") == lg for m in fixtures)]
     lg_opts = ["ALL", "TOP7"] + avail_lgs
 
+    # Pre-filter using live session_state keys so the clickable status bar counts always match on same render
+    cur_lg = st.session_state.get("daily_lg_flt", "ALL")
+    if cur_lg not in lg_opts:
+        cur_lg = "ALL"
+    cur_q_low = str(st.session_state.get("daily_team_q") or "").strip().lower()
+
+    flt_fixtures = []
+    for m in fixtures:
+        lg = str(m.get("league_code") or "")
+        if cur_lg == "TOP7" and lg not in ("ENG", "ESP", "ITA", "GER", "FRA", "UCL", "UEL"):
+            continue
+        elif cur_lg not in ("ALL", "TOP7") and lg != cur_lg:
+            continue
+        if cur_q_low and cur_q_low not in f"{m.get('home_team', '')} {m.get('away_team', '')} {m.get('competition', '')}".lower():
+            continue
+        flt_fixtures.append(m)
+
+    live_now = [m for m in flt_fixtures if m.get("state") == "in"]
+    live_now.sort(key=_sort_match_key)
+    day_all = [m for m in flt_fixtures if str(m.get("vn_date") or "") == sel_date]
+    day_all.sort(key=_sort_match_key)
+    day_pre_cnt = sum(1 for m in day_all if m.get("state") == "pre")
+    day_post_cnt = sum(1 for m in day_all if m.get("state") == "post")
+    day_total_cnt = len(day_all)
+
+    cur_flt = str(st.session_state.get("daily_state_flt") or "all")
+    sf1, sf2, sf3, sf4 = st.columns([1.0, 1.05, 1.2, 1.05], gap="small")
+    sf1.button(
+        f"📋 Tất cả ({day_total_cnt})",
+        key="daily_state_flt_all",
+        type="primary" if cur_flt == "all" else "secondary",
+        width="stretch",
+        on_click=_set_state_flt,
+        args=("all",),
+    )
+    sf2.button(
+        f"🔴 {len(live_now)} đang đá",
+        key="daily_state_flt_in",
+        type="primary" if cur_flt == "in" else "secondary",
+        width="stretch",
+        on_click=_set_state_flt,
+        args=("in",),
+    )
+    sf3.button(
+        f"⏰ {day_pre_cnt} sắp đá",
+        key="daily_state_flt_pre",
+        type="primary" if cur_flt == "pre" else "secondary",
+        width="stretch",
+        on_click=_set_state_flt,
+        args=("pre",),
+    )
+    sf4.button(
+        f"✅ {day_post_cnt} đã đá",
+        key="daily_state_flt_post",
+        type="primary" if cur_flt == "post" else "secondary",
+        width="stretch",
+        on_click=_set_state_flt,
+        args=("post",),
+    )
+
+    # Top filter & sync bar
     def _fmt_lg(lg):
         if lg == "ALL":
             return "🌍 Tất cả 13 giải đấu"
@@ -1956,8 +2023,8 @@ def _render_daily_schedule_fragment(fixtures: list[dict], updated_vn: str, ui_la
         return LEAGUE_META.get(lg, (lg, lg))[0]
 
     fc1, fc2, fc3, fc4 = st.columns([1.5, 1.4, 1.0, 1.1], gap="small")
-    sel_lg = fc1.selectbox("Giải đấu:", lg_opts, index=0, format_func=_fmt_lg, key="daily_lg_flt")
-    q_team = fc2.text_input("Tìm đội bóng:", placeholder="VD: Liverpool, Real Madrid, Arsenal...", key="daily_team_q")
+    fc1.selectbox("Giải đấu:", lg_opts, index=0, format_func=_fmt_lg, key="daily_lg_flt")
+    fc2.text_input("Tìm đội bóng:", placeholder="VD: Liverpool, Real Madrid, Arsenal...", key="daily_team_q")
     fc3.date_input("Chọn ngày khác:", key="daily_date_picker", on_change=_on_picker_change)
     with fc4:
         st.markdown('<div style="height:26px;"></div>', unsafe_allow_html=True)
@@ -1968,19 +2035,6 @@ def _render_daily_schedule_fragment(fixtures: list[dict], updated_vn: str, ui_la
             st.rerun()
 
     sel_date = str(st.session_state["daily_sel_date"])
-
-    # Filter fixtures by league and search text
-    q_low = str(q_team or "").strip().lower()
-    flt_fixtures = []
-    for m in fixtures:
-        lg = str(m.get("league_code") or "")
-        if sel_lg == "TOP7" and lg not in ("ENG", "ESP", "ITA", "GER", "FRA", "UCL", "UEL"):
-            continue
-        elif sel_lg not in ("ALL", "TOP7") and lg != sel_lg:
-            continue
-        if q_low and q_low not in f"{m.get('home_team', '')} {m.get('away_team', '')} {m.get('competition', '')}".lower():
-            continue
-        flt_fixtures.append(m)
 
     counts_by_date: dict[str, int] = {}
     counts_by_week: dict[int, int] = {}
@@ -2003,18 +2057,21 @@ def _render_daily_schedule_fragment(fixtures: list[dict], updated_vn: str, ui_la
         return ws.strftime("%Y-%m-%d")
 
     def _pick_date_btn(target_d_str: str):
+        st.session_state["daily_state_flt"] = "all"
         st.session_state["daily_sel_date"] = target_d_str
         dt_o = _parse_iso_date(target_d_str) or today_date
         st.session_state["daily_date_picker"] = dt_o
         st.session_state["daily_week_slider"] = max(min_wk, min(max_wk, (dt_o - current_monday).days // 7))
 
     def _on_week_slider_change():
+        st.session_state["daily_state_flt"] = "all"
         wk_off = int(st.session_state.get("daily_week_slider", 0))
         target_d_str = _default_date_for_week(wk_off)
         st.session_state["daily_sel_date"] = target_d_str
         st.session_state["daily_date_picker"] = _parse_iso_date(target_d_str) or today_date
 
     def _jump_to_week(target_wk: int):
+        st.session_state["daily_state_flt"] = "all"
         wk_c = max(min_wk, min(max_wk, int(target_wk)))
         st.session_state["daily_week_slider"] = wk_c
         target_d_str = _default_date_for_week(wk_c)
@@ -2090,102 +2147,134 @@ def _render_daily_schedule_fragment(fixtures: list[dict], updated_vn: str, ui_la
         )
 
     now_ts = datetime.now(timezone.utc).timestamp()
-    live_now = [m for m in flt_fixtures if m.get("state") == "in"]
-    live_now.sort(key=_sort_match_key)
 
     # Inline Live Match Viewer Panel (when user clicks "📺 Xem Live" or "📺 Diễn biến")
     viewer_cfg = st.session_state.get("daily_live_viewer_event")
     if isinstance(viewer_cfg, dict) and viewer_cfg.get("event_id") and viewer_cfg.get("slug"):
         _render_inline_live_viewer(live_now, viewer_cfg)
 
-    # Pinned Live Now Strip on Hôm nay (or 1-click Live banner on other dates/weeks)
-    if live_now:
-        if sel_date == today_str:
-            st.markdown(
-                f'<div class="section-hdr" style="margin-top:8px;"><span class="section-hdr-title" style="color:#FCA5A5;">🔴 ĐANG DIỄN RA TRỰC TIẾP ({len(live_now)})</span>'
-                f'<span class="section-hdr-sub">Bấm trực tiếp vào bất kỳ trận đấu nào để xem đầy đủ 6 tab thông số · hoặc ⚡ Xem nhanh tại đây</span></div>',
-                unsafe_allow_html=True,
-            )
-            for i_l, lm in enumerate(live_now):
-                _render_match_row_card(lm, now_ts, btn_key=f"live_pin_{i_l}_{lm.get('espn_event_id')}_{lm.get('home_team')}", show_date_badge=False)
-        else:
-            live_snip = ", ".join(
-                f"{x.get('home_team', '')} {x.get('home_score')}-{x.get('away_score')} {x.get('away_team', '')}"
-                for x in live_now[:2]
-            )
-            ellipsis = "…" if len(live_now) > 2 else ""
-            lb1, lb2 = st.columns([4.2, 1.4], gap="small")
-            lb1.markdown(
-                f'<div style="padding:7px 12px;border-radius:9px;background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.35);color:#FCA5A5;font-size:12.5px;font-weight:700;">'
-                f'🔴 Hiện có <b>{len(live_now)}</b> trận đang diễn ra trực tiếp hôm nay ({html.escape(live_snip)}{ellipsis})'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-            lb2.button(
-                "📺 Xem trực tiếp ngay",
-                key="live_banner_jump_watch",
-                type="primary",
-                width="stretch",
-                on_click=_open_inline_live_viewer,
-                args=(live_now[0],),
-            )
-
-    # Matches on selected date grouped by competition
-    day_matches = [m for m in flt_fixtures if str(m.get("vn_date") or "") == sel_date]
-    day_matches.sort(key=_sort_match_key)
-
     sel_disp = f"{_VI_WEEKDAYS[sel_dt_obj.weekday()]}, {sel_dt_obj.strftime('%d/%m/%Y')}"
-
-    st.markdown(
-        f'<div class="section-hdr" style="margin-top:10px;"><span class="section-hdr-title">📅 Lịch Thi Đấu Ngày {html.escape(sel_disp)} ({len(day_matches)} trận)</span>'
-        f'<span class="section-hdr-sub">Giờ thi đấu quy đổi GMT+7 · Bấm trực tiếp vào bất kỳ trận đấu nào để xem chi tiết đầy đủ 6 tab thông số</span></div>',
-        unsafe_allow_html=True,
-    )
-
+    day_matches = []
     show_next = []
-    if not day_matches:
-        st.info(f"Không có trận đấu nào khớp bộ lọc vào ngày **{sel_disp}**. Hãy bấm các ngày có số trận (>0) trên thanh tuần hoặc kéo thanh trượt sang tuần khác!")
+    used_btn_keys: set[str] = set()
+
+    def _stable_btn_key(prefix: str, m_item: dict) -> str:
+        uid = str(
+            m_item.get("espn_event_id")
+            or m_item.get("upcoming_match_id")
+            or m_item.get("opta_match_id")
+            or m_item.get("match_id")
+            or f"{m_item.get('home_team', '')}_{m_item.get('away_team', '')}"
+        ).strip()
+        base_k = f"{prefix}_{uid}"
+        if base_k not in used_btn_keys:
+            used_btn_keys.add(base_k)
+            return base_k
+        suffix = 2
+        while f"{base_k}_{suffix}" in used_btn_keys:
+            suffix += 1
+        k_out = f"{base_k}_{suffix}"
+        used_btn_keys.add(k_out)
+        return k_out
+
+    if cur_flt == "in":
+        st.markdown(
+            f'<div class="section-hdr" style="margin-top:8px;"><span class="section-hdr-title" style="color:#FCA5A5;">🔴 Trận Đang Diễn Ra Trực Tiếp ({len(live_now)} trận)</span>'
+            f'<span class="section-hdr-sub">Chỉ hiển thị các trận đang bóng lăn · Bấm lại nút 🔴 đang đá để quay lại tất cả</span></div>',
+            unsafe_allow_html=True,
+        )
+        if not live_now:
+            st.info("🔴 Hiện tại chưa có trận đấu nào đang diễn ra trực tiếp. Bạn có thể bấm **⏰ Sắp đá** để xem các trận chuẩn bị bóng lăn hoặc **✅ Đã đá** để xem kết quả!")
+        else:
+            for lm in live_now:
+                _render_match_row_card(lm, now_ts, btn_key=_stable_btn_key(f"live_pin_{lm.get('home_team')}", lm), show_date_badge=True)
     else:
-        grouped: dict[str, list[dict]] = {}
-        for m in day_matches:
-            grouped.setdefault(str(m.get("league_code") or "OTHER"), []).append(m)
+        if cur_flt == "all" and live_now:
+            if sel_date == today_str:
+                st.markdown(
+                    f'<div class="section-hdr" style="margin-top:8px;"><span class="section-hdr-title" style="color:#FCA5A5;">🔴 ĐANG DIỄN RA TRỰC TIẾP ({len(live_now)})</span>'
+                    f'<span class="section-hdr-sub">Bấm trực tiếp vào bất kỳ trận đấu nào để xem đầy đủ 6 tab thông số · hoặc ⚡ Xem nhanh tại đây</span></div>',
+                    unsafe_allow_html=True,
+                )
+                for lm in live_now:
+                    _render_match_row_card(lm, now_ts, btn_key=_stable_btn_key(f"live_pin_{lm.get('home_team')}", lm), show_date_badge=False)
+            else:
+                live_snip = ", ".join(
+                    f"{x.get('home_team', '')} {x.get('home_score')}-{x.get('away_score')} {x.get('away_team', '')}"
+                    for x in live_now[:2]
+                )
+                ellipsis = "…" if len(live_now) > 2 else ""
+                lb1, lb2 = st.columns([4.2, 1.4], gap="small")
+                lb1.markdown(
+                    f'<div style="padding:7px 12px;border-radius:9px;background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.35);color:#FCA5A5;font-size:12.5px;font-weight:700;">'
+                    f'🔴 Hiện có <b>{len(live_now)}</b> trận đang diễn ra trực tiếp hôm nay ({html.escape(live_snip)}{ellipsis})'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                lb2.button(
+                    "📺 Xem trực tiếp ngay",
+                    key="live_banner_jump_watch",
+                    type="primary",
+                    width="stretch",
+                    on_click=_open_inline_live_viewer,
+                    args=(live_now[0],),
+                )
 
-        ordered_codes = [c for c in _EXTENDED_LEAGUE_ORDER if c in grouped] + [c for c in grouped if c not in _EXTENDED_LEAGUE_ORDER]
-        row_counter = 0
-        for lg_code in ordered_codes:
-            items = grouped[lg_code]
-            items.sort(key=_sort_match_key)
-            comp_hdr = str(items[0].get("competition") or lg_code)
-            st.markdown(
-                f'<div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 6px;padding:5px 11px;border-radius:8px;'
-                f'background:rgba(15,23,42,0.85);border:1px solid rgba(148,163,184,0.14);">'
-                f'<span style="color:#E2E8F0;font-weight:800;font-size:12.5px;">{html.escape(comp_hdr)}</span>'
-                f'<span style="color:#64748B;font-size:11px;font-weight:700;">{len(items)} trận</span></div>',
-                unsafe_allow_html=True,
-            )
-            for m in items:
-                row_counter += 1
-                uid_tag = m.get("upcoming_match_id") or m.get("espn_event_id") or row_counter
-                _render_match_row_card(m, now_ts, btn_key=f"day_{sel_date}_{lg_code}_{row_counter}_{uid_tag}", show_date_badge=False)
+        if cur_flt == "pre":
+            day_matches = [m for m in day_all if m.get("state") == "pre"]
+            sec_title = f"⏰ Các Trận Chuẩn Bị Đá Ngày {html.escape(sel_disp)} ({len(day_matches)} trận)"
+        elif cur_flt == "post":
+            day_matches = [m for m in day_all if m.get("state") == "post"]
+            sec_title = f"✅ Các Trận Đã Đá Ngày {html.escape(sel_disp)} ({len(day_matches)} trận)"
+        else:
+            day_matches = list(day_all)
+            sec_title = f"📅 Lịch Thi Đấu Ngày {html.escape(sel_disp)} ({len(day_matches)} trận)"
 
-    # Smart "Chuẩn bị diễn ra tiếp theo" section when Today has < 6 remaining pre-match games
-    today_pre_left = [m for m in day_matches if m.get("state") == "pre"]
-    if sel_date == today_str and len(today_pre_left) < 6:
-        next_upcoming = [
-            m for m in flt_fixtures
-            if m.get("state") == "pre" and str(m.get("vn_date") or "") > today_str
-        ]
-        next_upcoming.sort(key=_sort_match_key)
-        if next_upcoming:
-            show_next = next_upcoming[:8]
-            st.markdown(
-                f'<div class="section-hdr" style="margin-top:16px;"><span class="section-hdr-title">⏰ Chuẩn Bị Diễn Ra Tiếp Theo (48–72 giờ tới)</span>'
-                f'<span class="section-hdr-sub">Tâm điểm Champions League & Top Giải Đấu tiếp nối ngay sau hôm nay</span></div>',
-                unsafe_allow_html=True,
-            )
-            for i_n, nm in enumerate(show_next):
-                uid_tag = nm.get("upcoming_match_id") or nm.get("espn_event_id") or i_n
-                _render_match_row_card(nm, now_ts, btn_key=f"next_up_{i_n}_{uid_tag}", show_date_badge=True)
+        st.markdown(
+            f'<div class="section-hdr" style="margin-top:10px;"><span class="section-hdr-title">{sec_title}</span>'
+            f'<span class="section-hdr-sub">Giờ thi đấu quy đổi GMT+7 · Bấm trực tiếp vào bất kỳ trận đấu nào để xem chi tiết đầy đủ 6 tab thông số</span></div>',
+            unsafe_allow_html=True,
+        )
+
+        if not day_matches:
+            st.info(f"Không có trận đấu nào khớp bộ lọc vào ngày **{sel_disp}**. Hãy bấm các ngày có số trận (>0) trên thanh tuần hoặc bấm **📋 Tất cả**!")
+        else:
+            grouped: dict[str, list[dict]] = {}
+            for m in day_matches:
+                grouped.setdefault(str(m.get("league_code") or "OTHER"), []).append(m)
+
+            ordered_codes = [c for c in _EXTENDED_LEAGUE_ORDER if c in grouped] + [c for c in grouped if c not in _EXTENDED_LEAGUE_ORDER]
+            for lg_code in ordered_codes:
+                items = grouped[lg_code]
+                items.sort(key=_sort_match_key)
+                comp_hdr = str(items[0].get("competition") or lg_code)
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 6px;padding:5px 11px;border-radius:8px;'
+                    f'background:rgba(15,23,42,0.85);border:1px solid rgba(148,163,184,0.14);">'
+                    f'<span style="color:#E2E8F0;font-weight:800;font-size:12.5px;">{html.escape(comp_hdr)}</span>'
+                    f'<span style="color:#64748B;font-size:11px;font-weight:700;">{len(items)} trận</span></div>',
+                    unsafe_allow_html=True,
+                )
+                for m in items:
+                    _render_match_row_card(m, now_ts, btn_key=_stable_btn_key(f"day_{sel_date}_{lg_code}", m), show_date_badge=False)
+
+        if cur_flt in ("all", "pre"):
+            today_pre_left = [m for m in day_matches if m.get("state") == "pre"]
+            if sel_date == today_str and len(today_pre_left) < 6:
+                next_upcoming = [
+                    m for m in flt_fixtures
+                    if m.get("state") == "pre" and str(m.get("vn_date") or "") > today_str
+                ]
+                next_upcoming.sort(key=_sort_match_key)
+                if next_upcoming:
+                    show_next = next_upcoming[:8]
+                    st.markdown(
+                        '<div class="section-hdr" style="margin-top:16px;"><span class="section-hdr-title">⏰ Chuẩn Bị Diễn Ra Tiếp Theo (48–72 giờ tới)</span>'
+                        '<span class="section-hdr-sub">Tâm điểm Champions League & Top Giải Đấu tiếp nối ngay sau hôm nay</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    for nm in show_next:
+                        _render_match_row_card(nm, now_ts, btn_key=_stable_btn_key("next_up", nm), show_date_badge=True)
 
     # Save deduplicated playlist for 1-click switching across matches inside ws_match
     day_playlist = []
