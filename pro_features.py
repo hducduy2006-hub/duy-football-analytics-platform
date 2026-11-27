@@ -1934,6 +1934,533 @@ def _get_process_ram_mb() -> float:
     return 0.0
 
 
+def _fallback_compare_stat_bar(label: str, v1, v2, disp1: str, disp2: str) -> str:
+    """Fallback thanh so sánh ngang khi chưa có hàm render_stat_bar_fn từ app.py."""
+    try:
+        n1 = max(0.0, float(v1 or 0))
+        n2 = max(0.0, float(v2 or 0))
+    except Exception:
+        n1, n2 = 0.0, 0.0
+    total = n1 + n2
+    w1 = round((n1 / total) * 100.0, 1) if total > 0 else 50.0
+    w2 = round(100.0 - w1, 1)
+    c1 = "#38BDF8" if n1 >= n2 else "#475569"
+    c2 = "#FF4D6D" if n2 >= n1 else "#475569"
+    return compact_html(f"""
+    <div style="margin-bottom:9px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-bottom:4px;">
+            <span style="color:{'#7DD3FC' if n1 >= n2 else '#CBD5E1'};font-weight:800;">{html.escape(str(disp1))}</span>
+            <span style="color:#94A3B8;font-weight:700;font-size:11.5px;">{html.escape(str(label))}</span>
+            <span style="color:{'#FDA4AF' if n2 >= n1 else '#CBD5E1'};font-weight:800;">{html.escape(str(disp2))}</span>
+        </div>
+        <div style="display:flex;height:7px;border-radius:999px;overflow:hidden;background:#0D121C;gap:2px;">
+            <div style="width:{w1}%;background:{c1};border-radius:999px 0 0 999px;"></div>
+            <div style="width:{w2}%;background:{c2};border-radius:0 999px 999px 0;"></div>
+        </div>
+    </div>
+    """)
+
+
+def _lookup_verified_fifa_for_global(rec: dict):
+    """Truy vấn FIFA DB và kiểm tra khớp tên nghiêm ngặt để tránh trùng họ cầu thủ hiện đại."""
+    full_name = str(rec.get("full_name") or rec.get("name") or "").strip()
+    disp_name = str(rec.get("name") or full_name).strip()
+    common_name = str(rec.get("common_name") or "").strip()
+    team_hint = str(rec.get("nationality") or rec.get("club") or "").strip()
+    row = lookup_fifa_player(full_name, disp_name, team_hint)
+    if not row:
+        return None
+    fifa_key = _ascii_key(str(row.get("Name") or ""))
+    if not fifa_key:
+        return None
+    cand_keys = [k for k in (_ascii_key(full_name), _ascii_key(disp_name), _ascii_key(common_name)) if k]
+    if fifa_key in cand_keys:
+        return row
+    f_parts = fifa_key.split()
+    for ck in cand_keys:
+        c_parts = ck.split()
+        if len(f_parts) >= 2 and len(c_parts) >= 2:
+            if f_parts[-1] == c_parts[-1] and f_parts[0][0] == c_parts[0][0]:
+                return row
+        elif len(f_parts) == 1 and f_parts[0] in c_parts and len(f_parts[0]) >= 5:
+            return row
+    return None
+
+
+def _compute_global_player_radar(rec: dict, fifa_info: dict = None) -> dict:
+    """Tính 6 trục kỹ năng (0-99) chuẩn hóa theo OVR, vị trí, dữ liệu Opta và FIFA DB."""
+    pos = str(rec.get("position") or "").strip().lower()
+    ovr = int(np.clip(int(rec.get("ovr") or 74), 52, 96))
+    apps = int(rec.get("apps") or 0)
+    starts = int(rec.get("starts") or 0)
+    mins = int(rec.get("minutes") or 0)
+    act_bonus = min(4.0, apps * 0.08 + starts * 0.04 + (mins / 2400.0) * 1.5)
+    is_ea = rec.get("source") == "EA FC 26/27"
+
+    is_gk = "goalkeeper" in pos or pos == "gk"
+    if is_gk:
+        base_vals = [
+            ovr + 1 + act_bonus * 0.5,
+            ovr + act_bonus * 0.4,
+            ovr - 2 + act_bonus * 0.4,
+            ovr + act_bonus * 0.5,
+            ovr - 5 + act_bonus * 0.3,
+            ovr + 1 + act_bonus * 0.5,
+        ]
+        if fifa_info:
+            f_vals = [
+                _parse_fifa_num(fifa_info.get("GK reflexes"), base_vals[0]),
+                _parse_fifa_num(fifa_info.get("GK diving"), base_vals[1]),
+                _parse_fifa_num(fifa_info.get("GK handling"), base_vals[2]),
+                _parse_fifa_num(fifa_info.get("GK positioning"), base_vals[3]),
+                _parse_fifa_num(fifa_info.get("GK kicking"), base_vals[4]),
+                float(fifa_info.get("Overall", ovr)),
+            ]
+            w_f = 0.50 if is_ea else 0.70
+            vals = [int(np.clip(round(fv * w_f + bv * (1.0 - w_f)), 42, 99)) for fv, bv in zip(f_vals, base_vals)]
+        else:
+            vals = [int(np.clip(round(bv), 42, 99)) for bv in base_vals]
+        return {
+            "axes": ["Phản xạ (Reflexes)", "Đổ người (Diving)", "Bắt bóng (Handling)", "Chọn vị trí (Position)", "Phân phối bóng (Kicking)", "Tầm ảnh hưởng (Impact)"],
+            "values": vals,
+        }
+
+    # Offset 6 trục [Dứt điểm, Chuyền & Tổ chức, Tịnh tiến (xT), Kéo & Giữ bóng, Phòng ngự, Tầm ảnh hưởng]
+    if any(k in pos for k in ("striker", "st", "cf", "center forward")):
+        offsets = (4, -4, 0, 1, -28, 1)
+    elif any(k in pos for k in ("wing", "lw", "rw", "lm", "rm", "forward")):
+        offsets = (1, 0, 3, 4, -22, 1)
+    elif any(k in pos for k in ("attacking", "cam")):
+        offsets = (0, 4, 4, 4, -15, 2)
+    elif any(k in pos for k in ("defensive", "cdm", "dm")):
+        offsets = (-9, 2, 1, -1, 5, 1)
+    elif any(k in pos for k in ("midfield", "cm")):
+        offsets = (-5, 4, 3, 2, -2, 1)
+    elif any(k in pos for k in ("wing back", "left back", "right back", "lb", "rb", "lwb", "rwb")):
+        offsets = (-15, -2, 2, -2, 3, 0)
+    elif any(k in pos for k in ("defender", "back", "cb")):
+        offsets = (-22, -5, -4, -7, 6, 0)
+    else:
+        offsets = (-2, 1, 1, 1, -8, 1)
+
+    base_vals = [
+        ovr + offsets[0] + act_bonus * 0.45,
+        ovr + offsets[1] + act_bonus * 0.45,
+        ovr + offsets[2] + act_bonus * 0.50,
+        ovr + offsets[3] + act_bonus * 0.45,
+        ovr + offsets[4] + act_bonus * 0.35,
+        ovr + offsets[5] + act_bonus * 0.55,
+    ]
+    if fifa_info:
+        f_shoot = (_parse_fifa_num(fifa_info.get("Finishing"), base_vals[0]) + _parse_fifa_num(fifa_info.get("Shot power"), base_vals[0])) / 2.0
+        f_pass = (_parse_fifa_num(fifa_info.get("Short passing"), base_vals[1]) + _parse_fifa_num(fifa_info.get("Vision"), base_vals[1])) / 2.0
+        f_prog = (_parse_fifa_num(fifa_info.get("Long passing"), base_vals[2]) + _parse_fifa_num(fifa_info.get("Crossing"), base_vals[2])) / 2.0
+        f_drib = (_parse_fifa_num(fifa_info.get("Dribbling"), base_vals[3]) + _parse_fifa_num(fifa_info.get("Ball control"), base_vals[3])) / 2.0
+        f_def = (_parse_fifa_num(fifa_info.get("Standing tackle"), base_vals[4]) + _parse_fifa_num(fifa_info.get("Interceptions"), base_vals[4])) / 2.0
+        f_imp = float(fifa_info.get("Overall", ovr))
+        w_f = 0.45 if is_ea else 0.75
+        f_list = (f_shoot, f_pass, f_prog, f_drib, f_def, f_imp)
+        vals = [int(np.clip(round(fv * w_f + bv * (1.0 - w_f)), 38, 99)) for fv, bv in zip(f_list, base_vals)]
+    else:
+        vals = [int(np.clip(round(bv), 38, 99)) for bv in base_vals]
+
+    return {
+        "axes": ["Dứt điểm", "Chuyền & Tổ chức", "Tịnh tiến (xT)", "Kéo & Giữ bóng", "Phòng ngự", "Tầm ảnh hưởng"],
+        "values": vals,
+    }
+
+
+def _render_dual_player_compare(
+    all_selectable_players: list,
+    match_events: pd.DataFrame,
+    current_match: dict,
+    render_stat_bar_fn,
+    key_prefix: str = "live_cmp",
+):
+    """So sánh 2 cầu thủ bất kỳ: Tìm kiếm toàn cầu 25.000+ cầu thủ HOẶC lọc nhanh trong trận đang chọn."""
+    bar_fn = render_stat_bar_fn or _fallback_compare_stat_bar
+    mode_global = "🌍 Tìm & So sánh mọi cầu thủ (25.000+)"
+    mode_match = "🏟️ Cầu thủ trong trận đang chọn"
+    cmp_mode = st.radio(
+        "Chế độ so sánh:",
+        [mode_global, mode_match],
+        horizontal=True,
+        label_visibility="collapsed",
+        key=f"{key_prefix}_mode",
+    )
+
+    if cmp_mode == mode_global:
+        # Lazy import để tránh vòng lặp import vì entity_explorer import pro_features ở đầu file
+        from entity_explorer import (
+            _player_portrait_html,
+            _team_crest_img_html,
+            get_player_search_index,
+            open_player_profile,
+            search_players,
+        )
+
+        duels = [
+            ("⚡ Mbappé vs Haaland", "Kylian Mbappé", "Erling Haaland"),
+            ("⚡ Yamal vs Vinícius", "Lamine Yamal", "Vinícius Júnior"),
+            ("⚡ Salah vs Saka", "Mohamed Salah", "Bukayo Saka"),
+            ("⚡ Messi vs C. Ronaldo", "Lionel Messi", "Cristiano Ronaldo"),
+            ("⚡ Pedri vs Bellingham", "Pedri", "Jude Bellingham"),
+        ]
+
+        def _apply_duel_preset(pq1: str, pq2: str):
+            st.session_state[f"{key_prefix}_q1"] = pq1
+            st.session_state[f"{key_prefix}_q2"] = pq2
+            st.session_state[f"{key_prefix}_last_q1"] = "__preset__"
+            st.session_state[f"{key_prefix}_last_q2"] = "__preset__"
+            st.session_state.pop(f"{key_prefix}_sel1", None)
+            st.session_state.pop(f"{key_prefix}_sel2", None)
+
+        p_cols = st.columns(len(duels), gap="small")
+        for idx_d, (d_lbl, d_q1, d_q2) in enumerate(duels):
+            p_cols[idx_d].button(
+                d_lbl,
+                key=f"{key_prefix}_preset_{idx_d}",
+                width="stretch",
+                on_click=_apply_duel_preset,
+                args=(d_q1, d_q2),
+            )
+
+        idx = get_player_search_index()
+        by_id = idx["by_id"]
+        top_stars = sorted(
+            idx["players"],
+            key=lambda r: (-int(r.get("ovr") or 0), -int(r.get("apps") or 0), str(r.get("name") or "")),
+        )[:40]
+        # Bảo đảm 2 ngôi sao mặc định (Mbappé & Haaland) luôn nằm sẵn trong danh sách gợi ý
+        seen_top = {r["id"] for r in top_stars}
+        for _feat_q in ("Kylian Mbappé", "Erling Haaland", "Lamine Yamal", "Mohamed Salah", "Lionel Messi"):
+            _hits = search_players(_feat_q, limit=1)
+            if _hits and _hits[0]["id"] not in seen_top:
+                top_stars.append(_hits[0])
+                seen_top.add(_hits[0]["id"])
+
+        if not top_stars:
+            st.info("Cơ sở dữ liệu cầu thủ hiện đang trống.")
+            return
+
+        cc1, cc2 = st.columns(2, gap="medium")
+
+        with cc1:
+            q1 = st.text_input(
+                "🔍 Tìm Cầu thủ 1 (tên hoặc CLB):",
+                placeholder="VD: Mbappe, Yamal, Messi, Real Madrid...",
+                key=f"{key_prefix}_q1",
+            )
+            q1_s = q1.strip()
+            cands1 = search_players(q1_s, limit=25) if q1_s else top_stars
+            if q1_s:
+                if cands1:
+                    st.caption(f"Tìm thấy {len(cands1)} kết quả cho '{q1_s}'")
+                else:
+                    st.warning(f"Không tìm thấy cầu thủ nào khớp '{q1_s}'. Hãy thử gõ tên không dấu hoặc tên CLB.")
+
+            sel1_id = None
+            if cands1:
+                opts1 = [c["id"] for c in cands1]
+                prev_q1 = st.session_state.get(f"{key_prefix}_last_q1", "")
+                if q1 != prev_q1:
+                    st.session_state[f"{key_prefix}_sel1"] = opts1[0]
+                    st.session_state[f"{key_prefix}_last_q1"] = q1
+                elif st.session_state.get(f"{key_prefix}_sel1") not in opts1:
+                    def1 = next((c["id"] for c in cands1 if "mbapp" in _ascii_key(c["name"])), opts1[0])
+                    st.session_state[f"{key_prefix}_sel1"] = def1
+                sel1_id = st.selectbox(
+                    "🔵 Chọn Cầu thủ 1:",
+                    opts1,
+                    format_func=lambda pid: (
+                        f"{by_id[pid]['name']} ({by_id[pid]['club'] or 'Tự do'} • OVR {by_id[pid]['ovr']}"
+                        + (f" • {by_id[pid]['position']}" if by_id[pid].get("position") else "")
+                        + ")"
+                    ),
+                    key=f"{key_prefix}_sel1",
+                )
+
+        with cc2:
+            q2 = st.text_input(
+                "🔍 Tìm Cầu thủ 2 (tên hoặc CLB):",
+                placeholder="VD: Haaland, Salah, Ronaldo, Arsenal...",
+                key=f"{key_prefix}_q2",
+            )
+            q2_s = q2.strip()
+            cands2 = search_players(q2_s, limit=25) if q2_s else top_stars
+            if q2_s:
+                if cands2:
+                    st.caption(f"Tìm thấy {len(cands2)} kết quả cho '{q2_s}'")
+                else:
+                    st.warning(f"Không tìm thấy cầu thủ nào khớp '{q2_s}'. Hãy thử gõ tên không dấu hoặc tên CLB.")
+
+            sel2_id = None
+            if cands2:
+                opts2 = [c["id"] for c in cands2]
+                prev_q2 = st.session_state.get(f"{key_prefix}_last_q2", "")
+                if q2 != prev_q2:
+                    st.session_state[f"{key_prefix}_sel2"] = opts2[0]
+                    st.session_state[f"{key_prefix}_last_q2"] = q2
+                elif st.session_state.get(f"{key_prefix}_sel2") not in opts2:
+                    def2 = next(
+                        (c["id"] for c in cands2 if "haaland" in _ascii_key(c["name"]) and c["id"] != sel1_id),
+                        next((pid for pid in opts2 if pid != sel1_id), opts2[0]),
+                    )
+                    st.session_state[f"{key_prefix}_sel2"] = def2
+                sel2_id = st.selectbox(
+                    "🔴 Chọn Cầu thủ 2:",
+                    opts2,
+                    format_func=lambda pid: (
+                        f"{by_id[pid]['name']} ({by_id[pid]['club'] or 'Tự do'} • OVR {by_id[pid]['ovr']}"
+                        + (f" • {by_id[pid]['position']}" if by_id[pid].get("position") else "")
+                        + ")"
+                    ),
+                    key=f"{key_prefix}_sel2",
+                )
+
+        if not sel1_id or not sel2_id or sel1_id not in by_id or sel2_id not in by_id:
+            return
+
+        r1, r2 = by_id[sel1_id], by_id[sel2_id]
+        f1 = _lookup_verified_fifa_for_global(r1)
+        f2 = _lookup_verified_fifa_for_global(r2)
+        rad1 = _compute_global_player_radar(r1, f1)
+        rad2 = _compute_global_player_radar(r2, f2)
+        if rad1["axes"] != rad2["axes"]:
+            rad2 = {
+                "axes": rad1["axes"],
+                "values": [int(np.clip(int(r2.get("ovr") or 74), 45, 99))] * 6,
+            }
+
+        p1_port = _player_portrait_html(r1["name"], r1["club"], size=58, allow_network=True)
+        p2_port = _player_portrait_html(r2["name"], r2["club"], size=58, allow_network=True)
+        c1_logo = _team_crest_img_html(r1["club"], size=18) if r1.get("club") else ""
+        c2_logo = _team_crest_img_html(r2["club"], size=18) if r2.get("club") else ""
+        pos1_badge = f" · {html.escape(r1['position'])}" if r1.get("position") else ""
+        pos2_badge = f" · {html.escape(r2['position'])}" if r2.get("position") else ""
+
+        st.markdown(compact_html(f"""
+        <div style="background:linear-gradient(135deg,#0E1523 0%,#131C2E 50%,#0E1523 100%);border:1px solid #243247;border-radius:12px;padding:12px 16px;margin:8px 0 10px 0;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+            <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:220px;">
+                {p1_port}
+                <div>
+                    <div style="font-size:15.5px;font-weight:900;color:#F8FAFC;">{html.escape(r1['name'])}</div>
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:3px;font-size:12px;color:#94A3B8;font-weight:700;">
+                        {c1_logo}<span>{html.escape(r1['club'] or 'Tự do')}{pos1_badge}</span>
+                    </div>
+                </div>
+                <span style="margin-left:auto;background:rgba(56,189,248,0.16);border:1px solid #38BDF8;color:#7DD3FC;font-weight:900;font-size:13px;padding:4px 10px;border-radius:8px;">OVR {r1['ovr']}</span>
+            </div>
+            <div style="font-size:13px;font-weight:900;color:#F59E0B;background:#1A2333;border:1px solid #334155;padding:5px 11px;border-radius:999px;">VS</div>
+            <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:220px;flex-direction:row-reverse;text-align:right;">
+                {p2_port}
+                <div>
+                    <div style="font-size:15.5px;font-weight:900;color:#F8FAFC;">{html.escape(r2['name'])}</div>
+                    <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:3px;font-size:12px;color:#94A3B8;font-weight:700;">
+                        <span>{html.escape(r2['club'] or 'Tự do')}{pos2_badge}</span>{c2_logo}
+                    </div>
+                </div>
+                <span style="margin-right:auto;background:rgba(255,77,109,0.16);border:1px solid #FF4D6D;color:#FDA4AF;font-weight:900;font-size:13px;padding:4px 10px;border-radius:8px;">OVR {r2['ovr']}</span>
+            </div>
+        </div>
+        """), unsafe_allow_html=True)
+
+        pb1, pb2 = st.columns(2, gap="small")
+        if pb1.button(f"👤 Xem hồ sơ {r1['name']}", key=f"{key_prefix}_prof1_{sel1_id}", width="stretch"):
+            open_player_profile(r1)
+        if pb2.button(f"👤 Xem hồ sơ {r2['name']}", key=f"{key_prefix}_prof2_{sel2_id}", width="stretch"):
+            open_player_profile(r2)
+
+        col_rad, col_bars = st.columns([1.05, 1.15], gap="medium")
+        with col_rad:
+            with st.container(border=True):
+                st.markdown(f"##### 🕸️ Radar Đối Đầu: {r1['name']} vs {r2['name']}")
+                axes = rad1["axes"] + [rad1["axes"][0]]
+                fig_cmp = go.Figure()
+                fig_cmp.add_trace(go.Scatterpolar(
+                    r=rad1["values"] + [rad1["values"][0]],
+                    theta=axes,
+                    fill="toself",
+                    fillcolor="rgba(56,189,248,0.26)",
+                    line=dict(color="#38BDF8", width=2.6),
+                    name=f"{r1['name']} ({r1['club'] or 'Tự do'})",
+                ))
+                fig_cmp.add_trace(go.Scatterpolar(
+                    r=rad2["values"] + [rad2["values"][0]],
+                    theta=axes,
+                    fill="toself",
+                    fillcolor="rgba(255,77,109,0.24)",
+                    line=dict(color="#FF4D6D", width=2.6),
+                    name=f"{r2['name']} ({r2['club'] or 'Tự do'})",
+                ))
+                fig_cmp.update_layout(
+                    polar=dict(
+                        bgcolor="#0D121C",
+                        radialaxis=dict(visible=True, range=[0, 100], gridcolor="rgba(148,163,184,0.16)"),
+                        angularaxis=dict(tickfont=dict(size=11.5, color="#F8FAFC")),
+                    ),
+                    height=360,
+                    margin=dict(l=35, r=35, t=28, b=15),
+                    paper_bgcolor="#131A26",
+                    font=dict(color="#E2E8F0"),
+                    legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
+                )
+                st.plotly_chart(fig_cmp, width="stretch", key=f"{key_prefix}_global_rad_{sel1_id}_{sel2_id}")
+
+        with col_bars:
+            with st.container(border=True):
+                st.markdown("##### 📊 Đối Chiếu Chỉ Số Tổng Thể")
+                b_html = ""
+                b_html += bar_fn("Chỉ số tổng thể (OVR)", r1["ovr"], r2["ovr"], f"{r1['ovr']}", f"{r2['ovr']}")
+                for ax_lbl, v1, v2 in zip(rad1["axes"], rad1["values"], rad2["values"]):
+                    b_html += bar_fn(ax_lbl, v1, v2, f"{v1}", f"{v2}")
+                if r1.get("apps", 0) > 0 or r2.get("apps", 0) > 0:
+                    b_html += bar_fn("Số trận Opta (25/27 & UCL)", r1.get("apps", 0), r2.get("apps", 0), str(r1.get("apps", 0)), str(r2.get("apps", 0)))
+                    b_html += bar_fn("Đá chính", r1.get("starts", 0), r2.get("starts", 0), str(r1.get("starts", 0)), str(r2.get("starts", 0)))
+                    b_html += bar_fn("Tổng số phút", r1.get("minutes", 0), r2.get("minutes", 0), f"{int(r1.get('minutes', 0)):,}'", f"{int(r2.get('minutes', 0)):,}'")
+                if f1 and f2 and f1.get("Value_M") and f2.get("Value_M"):
+                    b_html += bar_fn("Định giá FIFA", f1.get("Value_M", 1), f2.get("Value_M", 1), str(f1.get("Value", "N/A")), str(f2.get("Value", "N/A")))
+                st.markdown(b_html, unsafe_allow_html=True)
+                st.caption(f"Nguồn: {r1.get('source', 'EA FC 26/27')} & {r2.get('source', 'EA FC 26/27')} · Opta 25/27 & UCL · FIFA DB")
+        return
+
+    # Mode 2: So sánh cầu thủ trong trận đang chọn (vẫn giữ thanh tìm kiếm lọc nhanh)
+    players_list = all_selectable_players or []
+    if len(players_list) < 2:
+        st.info("Trận đang chọn ở thanh bên trái chưa có dữ liệu đội hình chi tiết. Bạn có thể dùng chế độ '🌍 Tìm & So sánh mọi cầu thủ (25.000+)' ở trên hoặc chọn một trận đã đấu.")
+        return
+
+    p_map = {p["name"]: p for p in players_list}
+    names_list = list(p_map.keys())
+    mid = str((current_match or {}).get("id") or "m")
+
+    def _filter_match_players(query_txt: str) -> list:
+        qk = _ascii_key(query_txt)
+        if not qk:
+            return names_list
+        toks = qk.split()
+        out = []
+        for nm in names_list:
+            p = p_map[nm]
+            hay = _ascii_key(f"{p.get('display_name', '')} {p.get('name', '')} {p.get('team_name', '')} {p.get('pos', '')}")
+            if all(t in hay for t in toks):
+                out.append(nm)
+        return out
+
+    cc1, cc2 = st.columns(2, gap="medium")
+    with cc1:
+        mq1 = st.text_input(
+            "🔍 Tìm Cầu thủ 1 trong trận:",
+            placeholder="Gõ tên, đội bóng hoặc vị trí...",
+            key=f"{key_prefix}_mq1_{mid}",
+        )
+        flt1 = _filter_match_players(mq1)
+        if mq1.strip() and not flt1:
+            st.warning(f"Không tìm thấy cầu thủ nào trong trận khớp '{mq1.strip()}'.")
+        p1_key = None
+        if flt1:
+            last_mq1 = st.session_state.get(f"{key_prefix}_last_mq1_{mid}", "")
+            if mq1 != last_mq1:
+                st.session_state[f"{key_prefix}_mp1_{mid}"] = flt1[0]
+                st.session_state[f"{key_prefix}_last_mq1_{mid}"] = mq1
+            elif st.session_state.get(f"{key_prefix}_mp1_{mid}") not in flt1:
+                st.session_state[f"{key_prefix}_mp1_{mid}"] = flt1[0]
+            p1_key = st.selectbox(
+                "🔵 Cầu thủ 1:",
+                flt1,
+                format_func=lambda n: f"{p_map[n]['display_name']} ({p_map[n]['team_name']} • {p_map[n]['rating']}★)",
+                key=f"{key_prefix}_mp1_{mid}",
+            )
+
+    with cc2:
+        mq2 = st.text_input(
+            "🔍 Tìm Cầu thủ 2 trong trận:",
+            placeholder="Gõ tên, đội bóng hoặc vị trí...",
+            key=f"{key_prefix}_mq2_{mid}",
+        )
+        flt2 = _filter_match_players(mq2)
+        if mq2.strip() and not flt2:
+            st.warning(f"Không tìm thấy cầu thủ nào trong trận khớp '{mq2.strip()}'.")
+        p2_key = None
+        if flt2:
+            last_mq2 = st.session_state.get(f"{key_prefix}_last_mq2_{mid}", "")
+            if mq2 != last_mq2:
+                st.session_state[f"{key_prefix}_mp2_{mid}"] = flt2[0]
+                st.session_state[f"{key_prefix}_last_mq2_{mid}"] = mq2
+            elif st.session_state.get(f"{key_prefix}_mp2_{mid}") not in flt2:
+                team1_nm = p_map[p1_key]["team_name"] if p1_key and p1_key in p_map else ""
+                def_m2 = next((nm for nm in flt2 if p_map[nm]["team_name"] != team1_nm), flt2[min(1, len(flt2) - 1)])
+                st.session_state[f"{key_prefix}_mp2_{mid}"] = def_m2
+            p2_key = st.selectbox(
+                "🔴 Cầu thủ 2:",
+                flt2,
+                format_func=lambda n: f"{p_map[n]['display_name']} ({p_map[n]['team_name']} • {p_map[n]['rating']}★)",
+                key=f"{key_prefix}_mp2_{mid}",
+            )
+
+    if not p1_key or not p2_key:
+        return
+
+    from entity_explorer import _player_portrait_html
+
+    p1, p2 = p_map[p1_key], p_map[p2_key]
+    m_port1 = _player_portrait_html(p1["display_name"], p1["team_name"], size=48, allow_network=False)
+    m_port2 = _player_portrait_html(p2["display_name"], p2["team_name"], size=48, allow_network=False)
+    st.markdown(compact_html(f"""
+    <div style="background:#0E1523;border:1px solid #243247;border-radius:11px;padding:9px 14px;margin:6px 0 10px 0;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:190px;">
+            {m_port1}
+            <div>
+                <div style="font-size:14.5px;font-weight:800;color:#F8FAFC;">{html.escape(p1['display_name'])}</div>
+                <div style="font-size:11.5px;color:#94A3B8;font-weight:700;">{html.escape(p1['team_name'])} · {html.escape(str(p1.get('pos', '')))}</div>
+            </div>
+            <span style="margin-left:auto;background:rgba(56,189,248,0.16);border:1px solid #38BDF8;color:#7DD3FC;font-weight:900;font-size:12.5px;padding:3px 9px;border-radius:7px;">{p1['rating']}★</span>
+        </div>
+        <div style="font-size:12px;font-weight:900;color:#F59E0B;">VS</div>
+        <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:190px;flex-direction:row-reverse;text-align:right;">
+            {m_port2}
+            <div>
+                <div style="font-size:14.5px;font-weight:800;color:#F8FAFC;">{html.escape(p2['display_name'])}</div>
+                <div style="font-size:11.5px;color:#94A3B8;font-weight:700;">{html.escape(p2['team_name'])} · {html.escape(str(p2.get('pos', '')))}</div>
+            </div>
+            <span style="margin-right:auto;background:rgba(255,77,109,0.16);border:1px solid #FF4D6D;color:#FDA4AF;font-weight:900;font-size:12.5px;padding:3px 9px;border-radius:7px;">{p2['rating']}★</span>
+        </div>
+    </div>
+    """), unsafe_allow_html=True)
+
+    has_ev_pcol = match_events is not None and not match_events.empty and "player_name" in match_events.columns
+    ev1 = match_events[match_events["player_name"] == p1_key] if has_ev_pcol else pd.DataFrame()
+    ev2 = match_events[match_events["player_name"] == p2_key] if has_ev_pcol else pd.DataFrame()
+    f1 = lookup_fifa_player(p1["name"], p1["display_name"], p1["team_name"])
+    f2 = lookup_fifa_player(p2["name"], p2["display_name"], p2["team_name"])
+    r1 = compute_player_radar_metrics(p1, ev1, f1)
+    r2 = compute_player_radar_metrics(p2, ev2, f2)
+    axes = r1["axes"] + [r1["axes"][0]]
+    col_rad, col_bars = st.columns([1.05, 1.15], gap="medium")
+    with col_rad:
+        with st.container(border=True):
+            st.markdown(f"##### 🕸️ Biểu Đồ Radar Đối Đầu: {p1['display_name']} vs {p2['display_name']}")
+            fig_cmp = go.Figure()
+            fig_cmp.add_trace(go.Scatterpolar(r=r1["values"] + [r1["values"][0]], theta=axes, fill="toself", fillcolor="rgba(56,189,248,0.26)", line=dict(color="#38BDF8", width=2.6), name=f"{p1['display_name']} ({p1['team_name']})"))
+            fig_cmp.add_trace(go.Scatterpolar(r=r2["values"] + [r2["values"][0]], theta=axes, fill="toself", fillcolor="rgba(255,77,109,0.24)", line=dict(color="#FF4D6D", width=2.6), name=f"{p2['display_name']} ({p2['team_name']})"))
+            fig_cmp.update_layout(polar=dict(bgcolor="#0D121C", radialaxis=dict(visible=True, range=[0, 100], gridcolor="rgba(148,163,184,0.16)"), angularaxis=dict(tickfont=dict(size=11.5, color="#F8FAFC"))), height=350, margin=dict(l=35, r=35, t=28, b=15), paper_bgcolor="#131A26", font=dict(color="#E2E8F0"), legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"))
+            st.plotly_chart(fig_cmp, width="stretch", key=f"{key_prefix}_match_rad_{p1_key}_{p2_key}")
+    with col_bars:
+        with st.container(border=True):
+            st.markdown("##### 📊 Đối Chiếu Trực Diện Các Chỉ Số")
+            b_html = ""
+            b_html += bar_fn("Điểm Đánh Giá (Rating)", p1["rating"], p2["rating"], f"{p1['rating']}★", f"{p2['rating']}★")
+            b_html += bar_fn("Bàn thắng", p1.get("goals_count", 0), p2.get("goals_count", 0), str(p1.get("goals_count", 0)), str(p2.get("goals_count", 0)))
+            b_html += bar_fn("Kiến tạo", p1.get("assists_count", 0), p2.get("assists_count", 0), str(p1.get("assists_count", 0)), str(p2.get("assists_count", 0)))
+            p1_c = int(str(p1.get("passes", "0/0")).split("/")[0])
+            p2_c = int(str(p2.get("passes", "0/0")).split("/")[0])
+            b_html += bar_fn("Chuyền chính xác", p1_c, p2_c, str(p1.get("passes")), str(p2.get("passes")))
+            b_html += bar_fn("Tắc bóng & Phòng ngự", p1.get("tackles", 0), p2.get("tackles", 0), str(p1.get("tackles", 0)), str(p2.get("tackles", 0)))
+            if f1 and f2:
+                b_html += bar_fn("Định giá FIFA", f1.get("Value_M", 1), f2.get("Value_M", 1), str(f1.get("Value", "N/A")), str(f2.get("Value", "N/A")))
+            st.markdown(b_html, unsafe_allow_html=True)
+
+
 def render_live_and_multimatch_workspace(
     catalog: dict,
     current_match: dict,
@@ -1992,45 +2519,13 @@ def render_live_and_multimatch_workspace(
 
     if sub_cmp.open:
         with sub_cmp:
-            players_list = all_selectable_players or []
-            if len(players_list) < 2 or render_stat_bar_fn is None:
-                st.info("Hãy chọn một trận đấu đã diễn ra từ thanh bên trái để so sánh 2 cầu thủ.")
-            else:
-                p_map = {p["name"]: p for p in players_list}
-                names_list = list(p_map.keys())
-                cc1, cc2 = st.columns(2)
-                p1_key = cc1.selectbox("🔵 Cầu thủ 1:", names_list, index=0, format_func=lambda n: f"{p_map[n]['display_name']} ({p_map[n]['team_name']} • {p_map[n]['rating']}★)", key=f"live_cmp_p1_{current_match['id']}")
-                def_i2 = next((i for i, nm in enumerate(names_list) if p_map[nm]["team_name"] != p_map[p1_key]["team_name"]), min(1, len(names_list) - 1))
-                p2_key = cc2.selectbox("🔴 Cầu thủ 2:", names_list, index=def_i2, format_func=lambda n: f"{p_map[n]['display_name']} ({p_map[n]['team_name']} • {p_map[n]['rating']}★)", key=f"live_cmp_p2_{current_match['id']}")
-                p1, p2 = p_map[p1_key], p_map[p2_key]
-                ev1 = match_events[match_events["player_name"] == p1_key] if "player_name" in match_events.columns else pd.DataFrame()
-                ev2 = match_events[match_events["player_name"] == p2_key] if "player_name" in match_events.columns else pd.DataFrame()
-                f1 = lookup_fifa_player(p1["name"], p1["display_name"], p1["team_name"])
-                f2 = lookup_fifa_player(p2["name"], p2["display_name"], p2["team_name"])
-                r1 = compute_player_radar_metrics(p1, ev1, f1)
-                r2 = compute_player_radar_metrics(p2, ev2, f2)
-                axes = r1["axes"] + [r1["axes"][0]]
-                col_rad, col_bars = st.columns([1.05, 1.15], gap="medium")
-                with col_rad:
-                    with st.container(border=True):
-                        fig_cmp = go.Figure()
-                        fig_cmp.add_trace(go.Scatterpolar(r=r1["values"] + [r1["values"][0]], theta=axes, fill="toself", fillcolor="rgba(56,189,248,0.26)", line=dict(color="#38BDF8", width=2.6), name=f"{p1['display_name']}"))
-                        fig_cmp.add_trace(go.Scatterpolar(r=r2["values"] + [r2["values"][0]], theta=axes, fill="toself", fillcolor="rgba(255,77,109,0.24)", line=dict(color="#FF4D6D", width=2.6), name=f"{p2['display_name']}"))
-                        fig_cmp.update_layout(polar=dict(bgcolor="#0D121C", radialaxis=dict(visible=True, range=[0, 100], gridcolor="rgba(148,163,184,0.16)"), angularaxis=dict(tickfont=dict(size=11.5, color="#F8FAFC"))), height=350, margin=dict(l=35, r=35, t=28, b=15), paper_bgcolor="#131A26", font=dict(color="#E2E8F0"), legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"))
-                        st.plotly_chart(fig_cmp, width="stretch", key=f"live_dual_rad_{p1_key}_{p2_key}")
-                with col_bars:
-                    with st.container(border=True):
-                        b_html = ""
-                        b_html += render_stat_bar_fn("Điểm Đánh Giá (Rating)", p1["rating"], p2["rating"], f"{p1['rating']}★", f"{p2['rating']}★")
-                        b_html += render_stat_bar_fn("Bàn thắng", p1.get("goals_count", 0), p2.get("goals_count", 0), str(p1.get("goals_count", 0)), str(p2.get("goals_count", 0)))
-                        b_html += render_stat_bar_fn("Kiến tạo", p1.get("assists_count", 0), p2.get("assists_count", 0), str(p1.get("assists_count", 0)), str(p2.get("assists_count", 0)))
-                        p1_c = int(str(p1.get("passes", "0/0")).split("/")[0])
-                        p2_c = int(str(p2.get("passes", "0/0")).split("/")[0])
-                        b_html += render_stat_bar_fn("Chuyền chính xác", p1_c, p2_c, str(p1.get("passes")), str(p2.get("passes")))
-                        b_html += render_stat_bar_fn("Tắc bóng & Phòng ngự", p1.get("tackles", 0), p2.get("tackles", 0), str(p1.get("tackles", 0)), str(p2.get("tackles", 0)))
-                        if f1 and f2:
-                            b_html += render_stat_bar_fn("Định giá FIFA", f1.get("Value_M", 1), f2.get("Value_M", 1), str(f1.get("Value", "N/A")), str(f2.get("Value", "N/A")))
-                        st.markdown(b_html, unsafe_allow_html=True)
+            _render_dual_player_compare(
+                all_selectable_players or [],
+                match_events,
+                current_match,
+                render_stat_bar_fn,
+                key_prefix="live_cmp",
+            )
 
     if sub_sys.open:
         with sub_sys:
@@ -2723,80 +3218,13 @@ def render_compare_ai_and_architecture_workspace(
     ])
 
     with tab_cmp:
-        if len(all_selectable_players) < 2:
-            st.info("Cần tối thiểu 2 cầu thủ để so sánh.")
-        else:
-            p_map = {p["name"]: p for p in all_selectable_players}
-            names_list = list(p_map.keys())
-            cc1, cc2 = st.columns(2)
-            p1_key = cc1.selectbox(
-                "🔵 Chọn Cầu thủ 1:",
-                names_list, index=0,
-                format_func=lambda n: f"{p_map[n]['display_name']} ({p_map[n]['team_name']} • {p_map[n]['rating']}★)",
-                key=f"cmp_p1_{current_match['id']}",
-            )
-            default_idx2 = min(1, len(names_list) - 1)
-            for idx_cand, nm_cand in enumerate(names_list):
-                if p_map[nm_cand]["team_name"] != p_map[p1_key]["team_name"]:
-                    default_idx2 = idx_cand
-                    break
-            p2_key = cc2.selectbox(
-                "🔴 Chọn Cầu thủ 2:",
-                names_list, index=default_idx2,
-                format_func=lambda n: f"{p_map[n]['display_name']} ({p_map[n]['team_name']} • {p_map[n]['rating']}★)",
-                key=f"cmp_p2_{current_match['id']}",
-            )
-            p1, p2 = p_map[p1_key], p_map[p2_key]
-            ev1 = match_events[match_events["player_name"] == p1_key] if "player_name" in match_events.columns else pd.DataFrame()
-            ev2 = match_events[match_events["player_name"] == p2_key] if "player_name" in match_events.columns else pd.DataFrame()
-            f1 = lookup_fifa_player(p1["name"], p1["display_name"], p1["team_name"])
-            f2 = lookup_fifa_player(p2["name"], p2["display_name"], p2["team_name"])
-            r1 = compute_player_radar_metrics(p1, ev1, f1)
-            r2 = compute_player_radar_metrics(p2, ev2, f2)
-
-            axes = r1["axes"] + [r1["axes"][0]]
-            v1 = r1["values"] + [r1["values"][0]]
-            v2 = r2["values"] + [r2["values"][0]]
-
-            col_rad, col_bars = st.columns([1.1, 1.2], gap="medium")
-            with col_rad:
-                with st.container(border=True):
-                    st.markdown(f"##### 🕸️ Biểu Đồ Radar Đối Đầu: {p1['display_name']} vs {p2['display_name']}")
-                    fig_cmp = go.Figure()
-                    fig_cmp.add_trace(go.Scatterpolar(
-                        r=v1, theta=axes, fill="toself", fillcolor="rgba(56, 189, 248, 0.28)",
-                        line=dict(color="#38BDF8", width=2.8), name=f"{p1['display_name']} ({p1['team_name']})",
-                    ))
-                    fig_cmp.add_trace(go.Scatterpolar(
-                        r=v2, theta=axes, fill="toself", fillcolor="rgba(255, 77, 109, 0.26)",
-                        line=dict(color="#FF4D6D", width=2.8), name=f"{p2['display_name']} ({p2['team_name']})",
-                    ))
-                    fig_cmp.update_layout(
-                        polar=dict(
-                            bgcolor="#0D121C",
-                            radialaxis=dict(visible=True, range=[0, 100], gridcolor="rgba(148,163,184,0.16)"),
-                            angularaxis=dict(tickfont=dict(size=12, color="#F8FAFC")),
-                        ),
-                        height=380, margin=dict(l=40, r=40, t=35, b=20),
-                        paper_bgcolor="#131A26", font=dict(color="#E2E8F0"),
-                        legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"),
-                    )
-                    st.plotly_chart(fig_cmp, width="stretch", key=f"dual_radar_{p1_key}_{p2_key}")
-
-            with col_bars:
-                with st.container(border=True):
-                    st.markdown("##### 📊 Đối Chiếu Trực Diện Các Chỉ Số")
-                    b_html = ""
-                    b_html += render_stat_bar_fn("Điểm Đánh Giá (Rating)", p1["rating"], p2["rating"], f"{p1['rating']}★", f"{p2['rating']}★")
-                    b_html += render_stat_bar_fn("Bàn thắng", p1.get("goals_count", 0), p2.get("goals_count", 0), str(p1.get("goals_count", 0)), str(p2.get("goals_count", 0)))
-                    b_html += render_stat_bar_fn("Kiến tạo", p1.get("assists_count", 0), p2.get("assists_count", 0), str(p1.get("assists_count", 0)), str(p2.get("assists_count", 0)))
-                    p1_comp = int(str(p1.get("passes", "0/0")).split("/")[0])
-                    p2_comp = int(str(p2.get("passes", "0/0")).split("/")[0])
-                    b_html += render_stat_bar_fn("Chuyền chính xác", p1_comp, p2_comp, str(p1.get("passes")), str(p2.get("passes")))
-                    b_html += render_stat_bar_fn("Tắc bóng & Phòng ngự", p1.get("tackles", 0), p2.get("tackles", 0), str(p1.get("tackles", 0)), str(p2.get("tackles", 0)))
-                    if f1 and f2:
-                        b_html += render_stat_bar_fn("Định giá chuyển nhượng", f1.get("Value_M", 1), f2.get("Value_M", 1), str(f1.get("Value", "N/A")), str(f2.get("Value", "N/A")))
-                    st.markdown(b_html, unsafe_allow_html=True)
+        _render_dual_player_compare(
+            all_selectable_players or [],
+            match_events,
+            current_match,
+            render_stat_bar_fn,
+            key_prefix="ws_cmp",
+        )
 
     with tab_aipred:
         from prematch_research import dixon_coles_matrix, extract_team_recent_form, load_historical_xg_df
